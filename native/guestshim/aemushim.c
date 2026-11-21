@@ -971,6 +971,208 @@ static long bwr_ordered(int fd, struct bwr *b, int tid) {
     return r;
 }
 
+/*
+ * Releases the stand's binderd never delivers. The kernel driver tells a process that owns a binder object when the
+ * last outside reference to it goes (BR_RELEASE / BR_DECREFS); binderd sends BR_INCREFS + BR_ACQUIRE when an object
+ * first leaves its process and nothing afterwards, so every such object lives as long as its process. AudioFlinger
+ * shows it: each IAudioTrack handed out stayed (with its mixer slot) after the app let go of it, a game's SoundPool
+ * makes one per sound played, and after 32 "no more track names available" silenced every new sound and song.
+ *
+ * Done for the objects AudioFlinger hands out (tracks, records, effects), which only their creator ever holds:
+ * - in the app: a handle that came back in a reply from IAudioFlinger is remembered; when libbinder drops its
+ *   last strong reference (BC_RELEASE), a oneway notice with AEMU_RELEASE_CODE goes to that object first;
+ * - in the owner (mediaserver): the notice is swapped for BR_RELEASE + BR_DECREFS of the object, the deliveries
+ *   binderd left out, and its buffer is freed;
+ * - binderd keeps its node, so if the owner later sends a new object at the same address (allocators reuse them)
+ *   it gets no BR_INCREFS/BR_ACQUIRE again: the owner then takes those two references itself.
+ */
+#define AEMU_RELEASE_CODE 0x5f41454du      /* '_AEM' */
+#define AEMU_RELEASE_MARK 0x52454c53u      /* 'RELS' */
+#define BC_RELEASE_ 0x40046306
+#define BR_RELEASE_ 0x80087209
+#define BR_DECREFS_ 0x8008720a
+#define BR_NOOP_ 0x720c
+#define T_BINDER_ 0x73622a85
+#define T_HANDLE_ 0x73682a85
+
+static volatile int g_rel_lock;
+static void rel_lock(void) { while (!__sync_bool_compare_and_swap(&g_rel_lock, 0, 1)) sys3(158 /* sched_yield */, 0, 0, 0); }
+static void rel_unlock(void) { __sync_lock_release(&g_rel_lock); }
+
+/* app side: handles of AudioFlinger's objects held by this process */
+#define AF_HANDLES 256
+static unsigned g_af_handle[AF_HANDLES];
+static void af_handle_add(unsigned h) {
+    if (!h) return;
+    rel_lock();
+    int free_at = -1;
+    for (int i = 0; i < AF_HANDLES; i++) {
+        if (g_af_handle[i] == h) { free_at = -2; break; }
+        if (!g_af_handle[i] && free_at == -1) free_at = i;
+    }
+    if (free_at >= 0) g_af_handle[free_at] = h;
+    rel_unlock();
+}
+static int af_handle_take(unsigned h) {
+    int found = 0;
+    rel_lock();
+    for (int i = 0; i < AF_HANDLES; i++) if (h && g_af_handle[i] == h) { g_af_handle[i] = 0; found = 1; break; }
+    rel_unlock();
+    return found;
+}
+
+/* owner side: objects released through a notice; binderd still knows them by these addresses */
+#define RELEASED_MAX 1024
+static struct { unsigned ptr, cookie; } g_released[RELEASED_MAX];
+static int g_released_next, g_released_any;
+static void released_add(unsigned ptr, unsigned cookie) {
+    rel_lock();
+    int at = -1;
+    for (int i = 0; i < RELEASED_MAX; i++) if (g_released[i].ptr == ptr && g_released[i].cookie == cookie) { at = i; break; }
+    if (at < 0) { at = g_released_next; g_released_next = (g_released_next + 1) % RELEASED_MAX; }
+    g_released[at].ptr = ptr; g_released[at].cookie = cookie;
+    g_released_any = 1;
+    rel_unlock();
+}
+static int released_take(unsigned ptr, unsigned cookie) {
+    int found = 0;
+    rel_lock();
+    for (int i = 0; i < RELEASED_MAX; i++)
+        if (g_released[i].ptr == ptr && g_released[i].cookie == cookie) { g_released[i].ptr = g_released[i].cookie = 0; found = 1; break; }
+    rel_unlock();
+    return found;
+}
+/* an object at an address released before goes out again: the references binderd will not deliver this time */
+static void rerefer_sent_objects(const unsigned *td) {
+    const unsigned char *d = (const unsigned char *)(ulong)td[8];
+    const unsigned *offs = (const unsigned *)(ulong)td[9];
+    unsigned size = td[6], n = td[7] / 4;
+    if (!d || !offs || !g_released_any) return;
+    for (unsigned i = 0; i < n; i++) {
+        if (offs[i] + 16 > size) continue;
+        const unsigned *o = (const unsigned *)(d + offs[i]);
+        if (o[0] != T_BINDER_ || !o[2] || !released_take(o[2], o[3])) continue;
+        volatile int *refs = (volatile int *)(ulong)o[2];   /* RefBase::weakref_impl: mStrong, mWeak */
+        __sync_fetch_and_add(&refs[0], 1);
+        __sync_fetch_and_add(&refs[1], 1);
+    }
+}
+
+/* per thread: depth of its synchronous calls, the depth of a pending call to IAudioFlinger, notices to answer for */
+#define RT_MAX 64
+static struct { volatile int tid; int depth, af_level, swallow, left_len; unsigned left[2]; } g_rt[RT_MAX];
+static int rt_find(int tid, int add) {
+    for (int k = 0; k < RT_MAX; k++) if (g_rt[k].tid == tid) return k;
+    if (add) for (int k = 0; k < RT_MAX; k++) if (__sync_bool_compare_and_swap(&g_rt[k].tid, 0, tid)) {
+        g_rt[k].depth = g_rt[k].af_level = g_rt[k].swallow = g_rt[k].left_len = 0;
+        return k;
+    }
+    return -1;
+}
+static void rt_maybe_free(int k) {
+    if (k >= 0 && !g_rt[k].depth && !g_rt[k].af_level && !g_rt[k].swallow && !g_rt[k].left_len) g_rt[k].tid = 0;
+}
+
+/*
+ * Sends the release notice for handle h and reads its BR_TRANSACTION_COMPLETE right away, through a read buffer
+ * that only fits short commands (BR_NOOP + the completion), so a transaction or reply meant for libbinder stays
+ * queued. Anything else short that comes along is handed back to libbinder with this thread's next read; a
+ * completion that has not arrived yet is taken off a later read.
+ */
+static void send_release_notice(int fd, int tid, unsigned h) {
+    static const unsigned mark = AEMU_RELEASE_MARK;
+    unsigned m[11] = { BC_TRANSACTION_, h, 0, AEMU_RELEASE_CODE, TF_ONE_WAY_, 0, 0, 4, 0, (unsigned)(ulong)&mark, (unsigned)(ulong)&mark };
+    unsigned in[2] = { 0, 0 };
+    struct bwr q = { (long)sizeof m, 0, (ulong)m, (long)sizeof in, 0, (ulong)in };
+    if (bwr_raw(fd, &q) < 0 || q.write_consumed != (long)sizeof m) return;
+    int k = rt_find(tid, 1);
+    if (k < 0) return;
+    int got = 0;
+    for (long i = 0; i + 4 <= q.read_consumed; i += 4) {
+        unsigned cmd = in[i / 4];
+        if (cmd == BR_NOOP_ || cmd == 0x720d /* BR_SPAWN_LOOPER: the pool has threads enough */) continue;
+        if (!got && (cmd == BR_TRANSACTION_COMPLETE_ || cmd == 0x7205 /* BR_DEAD_REPLY */ || cmd == 0x7211 /* BR_FAILED_REPLY */)) { got = 1; continue; }
+        if (g_rt[k].left_len < 2) g_rt[k].left[g_rt[k].left_len++] = cmd;
+    }
+    if (!got) g_rt[k].swallow++;
+}
+
+/* removes len bytes at p from the read stream */
+static void rb_cut(struct bwr *b, long p, long len) {
+    unsigned char *rb = (unsigned char *)b->read_buffer;
+    for (long i = p; i + len < b->read_consumed; i++) rb[i] = rb[i + len];
+    b->read_consumed -= len;
+}
+
+/* after a read: completions of our notices out, AudioFlinger's replies booked, notices for objects here turned into
+ * the releases; a thread waiting for a reply hands those to the pool (g_held), as for death notices */
+static void release_after_read(int fd, int tid, struct bwr *b, long start, int waiting) {
+    unsigned char *rb = (unsigned char *)b->read_buffer;
+    int k = rt_find(tid, 0);
+    /* short commands read along with a notice's completion go first, where libbinder would have found them */
+    if (k >= 0 && g_rt[k].left_len && b->read_consumed + 4L * g_rt[k].left_len <= b->read_size) {
+        long n = 4L * g_rt[k].left_len;
+        for (long i = b->read_consumed - 1; i >= start; i--) rb[i + n] = rb[i];
+        for (long i = 0; i < n; i++) rb[start + i] = ((unsigned char *)g_rt[k].left)[i];
+        b->read_consumed += n;
+        g_rt[k].left_len = 0;
+    }
+    for (long p = start; p + 4 <= b->read_consumed;) {
+        unsigned cmd = *(unsigned *)(rb + p);
+        long len = 4 + ((cmd >> 16) & 0x3fff);
+        if (p + len > b->read_consumed) break;
+        if (k >= 0 && g_rt[k].swallow > 0
+            && (cmd == BR_TRANSACTION_COMPLETE_ || cmd == 0x7205 /* BR_DEAD_REPLY */ || cmd == 0x7211 /* BR_FAILED_REPLY */)) {
+            g_rt[k].swallow--;
+            rb_cut(b, p, len);
+            continue;
+        }
+        if (k >= 0 && is_reply_cmd(cmd)) {
+            if (cmd == BR_REPLY_ && g_rt[k].af_level && g_rt[k].af_level == g_rt[k].depth && len >= 44) {
+                const unsigned *td = (const unsigned *)(rb + p + 4);
+                const unsigned char *d = (const unsigned char *)(ulong)td[8];
+                const unsigned *offs = (const unsigned *)(ulong)td[9];
+                for (unsigned i = 0; d && offs && i < td[7] / 4; i++) {
+                    if (offs[i] + 16 > td[6]) continue;
+                    const unsigned *o = (const unsigned *)(d + offs[i]);
+                    if (o[0] == T_HANDLE_) af_handle_add(o[2]);
+                }
+            }
+            if (g_rt[k].depth > 0) g_rt[k].depth--;
+            if (g_rt[k].af_level > g_rt[k].depth) g_rt[k].af_level = 0;
+        }
+        if (cmd == BR_TRANSACTION_ && len >= 44) {
+            const unsigned *td = (const unsigned *)(rb + p + 4);
+            if (td[2] == AEMU_RELEASE_CODE && (td[3] & TF_ONE_WAY_) && td[0] && td[6] == 4 && td[8]
+                && *(const unsigned *)(ulong)td[8] == AEMU_RELEASE_MARK) {
+                unsigned ptr = td[0], cookie = td[1], buf = td[8];
+                unsigned rel[6] = { BR_RELEASE_, ptr, cookie, BR_DECREFS_, ptr, cookie };
+                unsigned fr[2] = { BC_FREE_BUFFER_, buf };
+                struct bwr q = { (long)sizeof fr, 0, (ulong)fr, 0, 0, 0 };
+                bwr_raw(fd, &q);
+                released_add(ptr, cookie);
+                int held = 0;
+                if (waiting) {
+                    held_lock();
+                    if (g_held_len + (int)sizeof rel <= (int)sizeof g_held) {
+                        for (unsigned i = 0; i < sizeof rel; i++) g_held[g_held_len + i] = ((unsigned char *)rel)[i];
+                        g_held_len += (int)sizeof rel;
+                        held = 1;
+                    }
+                    held_unlock();
+                }
+                if (held) { rb_cut(b, p, len); continue; }
+                /* in place: 24 bytes of releases, the rest of the 44 filled with BR_NOOP */
+                unsigned *w = (unsigned *)(rb + p);
+                for (int i = 0; i < 6; i++) w[i] = rel[i];
+                for (long i = 24; i < len; i += 4) w[i / 4] = BR_NOOP_;
+            }
+        }
+        p += len;
+    }
+    rt_maybe_free(k);
+}
+
 EXPORT int ioctl(int fd, int req, void *arg) {
     if ((unsigned)req != BINDER_WRITE_READ_ || !arg) {
         long r = sys3(SYS_ioctl, fd, req, (long)arg);
@@ -986,12 +1188,25 @@ EXPORT int ioctl(int fd, int req, void *arg) {
         if (cmd == BC_TRANSACTION_ && p + 4 + 16 <= b->write_size && !(*(unsigned *)(b->write_buffer + p + 4 + 12) & TF_ONE_WAY_))
             wait_slot(tid, 1);
         if (cmd == BC_TRANSACTION_ && p + 4 + 40 <= b->write_size) pin_service((const unsigned char *)(b->write_buffer + p + 4));
+        if ((cmd == BC_TRANSACTION_ || cmd == BC_REPLY_) && p + 4 + 40 <= b->write_size)
+            rerefer_sent_objects((const unsigned *)(b->write_buffer + p + 4));
+        if (cmd == BC_TRANSACTION_ && p + 4 + 40 <= b->write_size && !(*(unsigned *)(b->write_buffer + p + 4 + 12) & TF_ONE_WAY_)) {
+            int k = rt_find(tid, 1);
+            if (k >= 0) {
+                g_rt[k].depth++;
+                if (iface_is((const unsigned char *)(b->write_buffer + p + 4), "android.media.IAudioFlinger", 27))
+                    g_rt[k].af_level = g_rt[k].depth;
+            }
+        }
+        if (cmd == BC_RELEASE_ && p + 8 <= b->write_size && af_handle_take(*(unsigned *)(b->write_buffer + p + 4)))
+            send_release_notice(fd, tid, *(unsigned *)(b->write_buffer + p + 4));
         if (cmd == BC_FREE_BUFFER_ && p + 8 <= b->write_size) ow_freed(*(unsigned *)(b->write_buffer + p + 4));
         p += 4 + sz;
     }
     long start = b->read_consumed;
     long r = bwr_ordered(fd, b, tid);
     if (r < 0) return fail(r);
+    release_after_read(fd, tid, b, start, is_waiting(tid));
     int nested_oneway = 0, replied = 0, before_bind = 0;
     for (long p = start; p + 4 <= b->read_consumed;) {
         unsigned cmd = *(unsigned *)(b->read_buffer + p);
