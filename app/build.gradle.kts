@@ -71,6 +71,14 @@ android {
     }
 
     signingConfigs {
+        // test builds: one shared debug key (app/test-signing), so each new build updates the installed one
+        val testKey = rootProject.file("app/test-signing/aemu-test-debug.keystore")
+        if (testKey.isFile) getByName("debug") {
+            storeFile = testKey
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         if (canSign) create("release") {
             storeFile = rootProject.file(signProps.getProperty("storeFile"))
             storePassword = signProps.getProperty("storePassword")
