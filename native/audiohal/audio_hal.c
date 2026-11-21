@@ -20,6 +20,15 @@ extern void *calloc(unsigned long n, unsigned long size);
 extern void free(void *p);
 extern int *__errno(void);
 extern int usleep(unsigned long us);
+struct aemu_ts { long sec, nsec; };
+extern int clock_gettime(int clk, struct aemu_ts *t);
+#define CLOCK_MONOTONIC 1
+
+static uint64_t now_us(void) {
+    struct aemu_ts t;
+    if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return 0;
+    return (uint64_t)t.sec * 1000000ULL + (uint64_t)(unsigned long)(t.nsec / 1000);
+}
 
 #define O_RDWR 2
 #define EAGAIN 11
@@ -38,6 +47,8 @@ extern int usleep(unsigned long us);
 #define DEVICE_OUT_DEFAULT 0x40000000
 #define BUFFER_BYTES 4096
 #define LATENCY_MS 100
+/* how far ahead of real time the mixer may run: the cushion that rides out short stalls of the guest */
+#define LEAD_US 100000
 
 typedef void *fnp;
 
@@ -168,6 +179,7 @@ struct out {
     uint32_t device;
     uint64_t frames;
     int stalled;                 /* nobody has read the channel for a while: drop sound instead of waiting */
+    uint64_t due;                /* when everything written so far will have played, on the monotonic clock */
 };
 
 /* ---------------------------------------------------------------- поток вывода */
@@ -203,7 +215,6 @@ static long o_write(struct audio_stream_out *st, const void *buf, size_t bytes) 
        а за ним system_server в AudioSystem.setParameters); O_NONBLOCK: полный канал не вешает микшер */
     if (o->fd < 0) o->fd = open(AEMU_PCM_DEV, O_RDWR | O_NONBLOCK);
     unsigned long frame_us = (unsigned long)(bytes / 4) * 1000000UL / RATE;
-    int played = 0;
     if (o->fd >= 0) {
         const char *p = (const char *)buf;
         size_t left = bytes;
@@ -226,10 +237,16 @@ static long o_write(struct audio_stream_out *st, const void *buf, size_t bytes) 
             close(o->fd); o->fd = -1;
             break;
         }
-        played = left < bytes;
     }
-    /* без читателя канал не тормозит запись — держим темп сами, иначе микшер крутится на 100% процессора */
-    if (!played) usleep(frame_us);
+    /* Keep the mixer on real time. Whenever the channel had room (after the guest fell behind, e.g. under rapid
+       tapping), writes used to return at once and AudioFlinger mixed many rounds back to back. Each round in which
+       a track had no data counts against it, and SoundPool's short tracks (the game's sound effects) refill slowly
+       under emulation: they ran out of retries within a single burst and AudioFlinger removed them, so effects and
+       looped sounds stopped while music went on. Also keeps the mixer from spinning when nobody reads. */
+    uint64_t now = now_us();
+    if (o->due < now) o->due = now;         /* behind, or the first write after standby: restart the clock */
+    o->due += frame_us;
+    if (o->due > now + LEAD_US) usleep((unsigned long)(o->due - now - LEAD_US));
     o->frames += bytes / 4;
     return (long)bytes;
 }
