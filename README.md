@@ -45,6 +45,8 @@ The list of firmware that has been checked — with statuses, notes and download
 4. Press **Start**. The first boot is slower: the system optimises its apps.
 5. Use the ⋮ menu for volume, power button and logs; the ⚙️ button opens app settings and language.
 
+Guide: [Play Elphis on a Nexus 4 firmware](docs/play-elphis.md).
+
 ## 📋 Requirements
 
 - Android 8.0+ on a 64-bit ARM phone (arm64-v8a)

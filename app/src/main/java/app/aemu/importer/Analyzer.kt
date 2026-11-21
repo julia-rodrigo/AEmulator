@@ -97,6 +97,13 @@ class Analyzer(private val ctx: Context, private val paths: VmPaths, private val
             // draw nothing at 240; its phones are xxhdpi, so it gets the phone's own screen
             skin.startsWith("MIUI") && api >= 21 -> VmSettings(width = 1080, height = 1920, density = 480)
             else -> VmSettings(width = 540, height = 960, density = 240)
+        }.let { base ->
+            // Nexus 4 (mako/occam): the settings Elphis was played with on Android 4.4.4 (KTU84P), sound and touch
+            // included: the screen above, software rendering instead of the GL bridge, 512 MB of guest RAM
+            val device = product("device")?.lowercase() ?: ""
+            if (engine == Engine.KK && (model.equals("Nexus 4", true) || device == "mako" || device == "occam"))
+                base.copy(width = 540, height = 960, density = 240, gpu = false, ramMb = 512)
+            else base
         }
 
         writePropsTemplate(deflt, build, api, engine, rc.setprops)
