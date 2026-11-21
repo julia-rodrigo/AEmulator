@@ -167,6 +167,7 @@ struct out {
     int fd;
     uint32_t device;
     uint64_t frames;
+    int stalled;                 /* nobody has read the channel for a while: drop sound instead of waiting */
 };
 
 /* ---------------------------------------------------------------- поток вывода */
@@ -207,15 +208,19 @@ static long o_write(struct audio_stream_out *st, const void *buf, size_t bytes) 
         const char *p = (const char *)buf;
         size_t left = bytes;
         unsigned long waited = 0;
+        /* A full channel normally only means the guest is ahead of the phone, which plays it at its own pace:
+           wait for room. Dropping the chunk after a short wait (as before) cut pieces out of the sound whenever the
+           phone took a little longer, which it does when busy. A channel nobody has read for half a second counts
+           as gone: then sound is dropped without waiting until it is read again, so the mixer is not held up. */
+        unsigned long limit = o->stalled ? 0 : 500000;
         while (left > 0) {
             long n = write(o->fd, p, left);
-            if (n > 0) { p += n; left -= (size_t)n; continue; }
+            if (n > 0) { p += n; left -= (size_t)n; o->stalled = 0; continue; }
             int e = n < 0 ? *__errno() : 0;
             if (e == EINTR) continue;
             if (e == EAGAIN) {
-                /* приложение ещё не выбрало звук — подождём не дольше длительности куска, потом выбросим */
-                if (waited >= frame_us + 20000) break;
-                usleep(5000); waited += 5000;
+                if (waited >= limit) { o->stalled = 1; break; }
+                usleep(2000); waited += 2000;
                 continue;
             }
             close(o->fd); o->fd = -1;
