@@ -18,6 +18,8 @@
 
 AEmulator boots a real Android 2.3–17 system image straight from a firmware file you already have: a recovery ZIP, an Odin archive, a Google factory image or a GSI. Old 32-bit firmware (2.3–4.4) runs through a patched QEMU, Android 5.0–17 runs natively on the phone’s arm64 cores. The kernel’s binder is emulated, graphics use your phone’s GPU and sound goes through Android’s audio stack — everything runs inside a normal app.
 
+🎮 **Set up to play Elphis.** Import a Google Nexus 4 firmware (Android 4.4.4) and it gets the settings the game was tested with. Sound is fixed so the game stays playable: effects and music no longer cut out, even with fast tapping. See [Play Elphis on a Nexus 4 firmware](docs/play-elphis.md).
+
 ## ✨ Features
 
 - Import almost any firmware format: CWM/TWRP ZIP, Samsung Odin `.tar.md5`, Google factory `.tgz`, `system.img`, OTA `system.new.dat.br`
@@ -44,8 +46,6 @@ The list of firmware that has been checked — with statuses, notes and download
 3. Open AEmulator → **Add firmware** and pick the file. Import takes a few minutes.
 4. Press **Start**. The first boot is slower: the system optimises its apps.
 5. Use the ⋮ menu for volume, power button and logs; the ⚙️ button opens app settings and language.
-
-Guide: [Play Elphis on a Nexus 4 firmware](docs/play-elphis.md).
 
 ## 📋 Requirements
 
