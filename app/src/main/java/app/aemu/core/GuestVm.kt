@@ -481,6 +481,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
             audio.makeFifo(); audio.start()
             log("audio: MediaTek, emulator HAL via /dev/aemu_pcm")
         } else { audio.makeFifo(); audio.start() }
+        watchAudioTracks()
         events.start()
         lights.start()
         sensors.start()
@@ -1176,6 +1177,48 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
             synchronized(procs) { procs.remove("zygote_secondary") }?.let { runCatching { it.destroyForcibly() } }
             runCatching { startService(z2) }
         }
+    }
+
+    /**
+     * Diagnostics for sound effects that stop for good: when the guest's AudioFlinger runs out of track names
+     * ("no more track names available": 32 per output, and SoundPool makes a new track for every sound played),
+     * its track list goes into the host log right away and again 15 s later. The second list tells whether the
+     * old tracks get freed late (fewer entries) or never (the same entries still there).
+     */
+    private fun watchAudioTracks() {
+        if (img.api < 14) return
+        Thread({
+            val f = File(paths.root, "dev/log/main")
+            var seen = f.length()
+            var rounds = 0
+            while (!stopping && rounds < 3) {
+                try { Thread.sleep(3000) } catch (_: InterruptedException) { return@Thread }
+                val len = f.length()
+                if (len < seen) seen = 0
+                if (len == seen) continue
+                val hit = runCatching {
+                    java.io.RandomAccessFile(f, "r").use { r ->
+                        val from = maxOf(seen, len - 400_000L)
+                        val b = ByteArray((len - from).toInt()); r.seek(from); r.readFully(b)
+                        String(b, Charsets.ISO_8859_1).contains("no more track names")
+                    }
+                }.getOrDefault(false)
+                seen = len
+                if (!hit) continue
+                rounds++
+                dumpAudioTracks("audio: the guest ran out of sound tracks; its track list:")
+                try { Thread.sleep(15_000) } catch (_: InterruptedException) { return@Thread }
+                if (stopping) return@Thread
+                dumpAudioTracks("audio: track list 15 s later:")
+                seen = f.length()
+            }
+        }, "audio-watch").apply { isDaemon = true; start() }
+    }
+
+    private fun dumpAudioTracks(title: String) {
+        val out = runCatching { guestShell("dumpsys media.audio_flinger 2>&1", 30_000) }.getOrElse { "failed: ${it.message}" }
+        log(title)
+        out.lines().filter { it.isNotBlank() }.take(150).forEach { log("  | $it") }
     }
 
     private fun guestLogHas(text: String): Boolean = runCatching {
