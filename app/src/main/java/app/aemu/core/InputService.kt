@@ -33,6 +33,17 @@ class InputService(private val paths: VmPaths, private val log: (String) -> Unit
     private var pendingAt = 0L
     private var pumpStarted = false
     private var wasDown = false
+    private var frameIds: List<Int> = emptyList()
+
+    /**
+     * Events waiting for the guest. Writing to its socket used to happen right on the phone's UI thread:
+     * when the guest fell behind (busy game, rapid tapping) the socket filled up, the UI thread blocked
+     * and the whole app stuttered. One writer thread drains this queue instead.
+     */
+    private class Out(val bytes: ByteArray, val move: Boolean)
+    private val queue = java.util.ArrayDeque<Out>()
+    private val qLock = Object()
+    private var writer: Thread? = null
 
     private val server = UnixServer(paths.inputSock, "input") { c ->
         runCatching { c.sendBufferSize = 64 * 1024 }
@@ -125,13 +136,18 @@ class InputService(private val paths: VmPaths, private val log: (String) -> Unit
             }
         }
         val down = now.isNotEmpty()
+        val ids = now.map { it.id }
+        // a plain finger move (same fingers, still down): if the guest has not read the previous one yet,
+        // only the newest position matters
+        val move = down && wasDown && ids == frameIds
+        frameIds = ids
         if (down != wasDown) {
             put(b, EV_KEY, BTN_TOUCH, if (down) 1 else 0)
             wasDown = down
         }
         if (!down && mtMode != 4) put(b, EV_SYN, SYN_MT_REPORT, 0)
         put(b, EV_SYN, SYN_REPORT, 0)
-        flush(b)
+        flush(b, move)
     }
 
     fun key(code: Int, down: Boolean) {
@@ -206,10 +222,37 @@ class InputService(private val paths: VmPaths, private val log: (String) -> Unit
         b.putInt(value)
     }
 
-    private fun flush(b: ByteBuffer) {
+    private fun flush(b: ByteBuffer, move: Boolean = false) {
         if (b.position() == 0) return
         val a = ByteArray(b.position())
         b.flip(); b.get(a); b.clear()
+        synchronized(qLock) {
+            val last = queue.peekLast()
+            if (move && last != null && last.move) queue.pollLast()
+            // a guest that stopped reading must not grow this without end: drop the oldest moves
+            if (queue.size > 256) queue.removeAll { it.move }
+            queue.addLast(Out(a, move))
+            if (writer == null) {
+                writer = Thread({ drain() }, "input-writer").apply { isDaemon = true; start() }
+            }
+            qLock.notifyAll()
+        }
+    }
+
+    private fun drain() {
+        runCatching { Process.setThreadPriority(-8) }
+        while (true) {
+            val a = synchronized(qLock) {
+                while (queue.isEmpty()) {
+                    try { qLock.wait() } catch (_: InterruptedException) { return }
+                }
+                queue.pollFirst()!!.bytes
+            }
+            write(a)
+        }
+    }
+
+    private fun write(a: ByteArray) {
         sink?.let { runCatching { it.write(a); it.flush() }.onFailure { sink = null } }
         val dead = ArrayList<Client>()
         // a 64-bit guest reads struct input_event with a 16-byte timeval

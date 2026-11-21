@@ -3,7 +3,6 @@ package app.aemu.core
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import android.os.SystemClock
 import android.system.Os
 import android.system.OsConstants
 import java.io.File
@@ -59,9 +58,15 @@ class AudioOut(
     }
 
     private fun pump() {
+        // The guest only keeps time through this pipe: a stalled reader means the guest's mixer drops sound.
+        // Run at audio priority so taps and screen work on the phone do not starve it.
+        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO) }
         val min = runCatching { AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT) }.getOrDefault(0)
         val bufSize = maxOf(min * 4, 64 * 1024)
-        val buf = ByteArray(4096)
+        val buf = ByteArray(4096 + FRAME)
+        // bytes of an incomplete stereo frame left from the last read; AudioTrack only takes whole frames,
+        // and losing them would shift the stream by a sample (loud static until the next restart)
+        var carry = 0
         var track: AudioTrack? = null
         while (!stop) {
             val ins = runCatching { FileInputStream(fifo) }.getOrNull()
@@ -76,31 +81,44 @@ class AudioOut(
                         .build().also { it.play() }
                 }.onFailure { log("audio: output failed to open: ${it.message}") }.getOrNull()
             }
+            carry = 0
             ins.use { s ->
                 while (!stop) {
-                    val n = try { s.read(buf) } catch (e: Exception) { -1 }
-                    if (n < 0) break
-                    if (n == 0) continue
+                    val got = try { s.read(buf, carry, 4096) } catch (e: Exception) { -1 }
+                    if (got < 0) break
+                    if (got == 0) continue
+                    val n = carry + got
+                    val whole = n - n % FRAME
                     if (played == 0L) log("audio started")
-                    audioCaptureHook?.invoke(buf, 0, n)
-                    val t = track
-                    if (t != null && !muted) {
-                        var off = 0
-                        val until = SystemClock.uptimeMillis() + 1000
-                        while (off < n && !stop) {
-                            val w = t.write(buf, off, n - off, AudioTrack.WRITE_NON_BLOCKING)
-                            if (w > 0) off += w
-                            else if (w < 0) { runCatching { t.release() }; track = null; break }
-                            else if (SystemClock.uptimeMillis() > until) break
-                            else Thread.sleep(4)
+                    if (whole > 0) {
+                        audioCaptureHook?.invoke(buf, 0, whole)
+                        val t = track
+                        if (t != null && !muted) {
+                            // blocking write: the phone's mixer paces us smoothly, without the 4 ms polling
+                            // steps that let the track run dry while the system was busy
+                            var off = 0
+                            while (off < whole && !stop) {
+                                val w = t.write(buf, off, whole - off, AudioTrack.WRITE_BLOCKING)
+                                if (w > 0) off += w
+                                else { if (w < 0) { runCatching { t.release() }; track = null }; break }
+                            }
+                        } else {
+                            // nothing drains the pipe at play speed while muted: keep the guest's time ourselves,
+                            // or its mixer spins and eats the CPU the game needs
+                            runCatching { Thread.sleep(whole / FRAME * 1000L / rate) }
                         }
+                        played += whole
                     }
-                    played += n
+                    carry = n - whole
+                    if (carry > 0) System.arraycopy(buf, whole, buf, 0, carry)
                 }
             }
         }
         runCatching { track?.stop(); track?.release() }
     }
 
-    companion object { const val RATE = 48000 }
+    companion object {
+        const val RATE = 48000
+        private const val FRAME = 4 // 16-bit stereo
+    }
 }
