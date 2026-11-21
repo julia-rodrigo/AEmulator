@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -106,6 +107,7 @@ fun MachineCard(
     onSettings: () -> Unit,
     onRename: () -> Unit,
     onNewMachine: () -> Unit,
+    onBackups: () -> Unit,
     onReset: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -137,6 +139,8 @@ fun MachineCard(
                         onClick = { menu = false; onRename() })
                     DropdownMenuItem(text = { Text(stringResource(R.string.new_machine)) }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) },
                         onClick = { menu = false; onNewMachine() })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.backups)) }, leadingIcon = { Icon(Icons.Rounded.Backup, null) },
+                        onClick = { menu = false; onBackups() })
                     HorizontalDivider()
                     DropdownMenuItem(text = { Text(stringResource(R.string.reset_data)) }, leadingIcon = { Icon(Icons.Rounded.RestartAlt, null) },
                         onClick = { menu = false; onReset() })

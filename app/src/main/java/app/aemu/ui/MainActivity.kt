@@ -169,6 +169,8 @@ fun Library(model: LibraryModel) {
     var addMenu by remember { mutableStateOf(false) }
     var library by remember { mutableStateOf(false) }
     var containerFrom by remember { mutableStateOf<GuestImage?>(null) }
+    var backupsFor by remember { mutableStateOf<GuestImage?>(null) }
+    val pickBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { backupsFor = null; model.import(it) } }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     val scope = rememberCoroutineScope()
@@ -249,6 +251,7 @@ fun Library(model: LibraryModel) {
                     onSettings = { settingsFor = img },
                     onRename = { renameFor = img },
                     onNewMachine = { containerFrom = img },
+                    onBackups = { model.refreshBackups(); backupsFor = img },
                     onReset = { resetFor = img },
                     onDelete = { deleteFor = img },
                 )
@@ -299,6 +302,17 @@ AlertDialog(
         onImportFile = { library = false; pick.launch(arrayOf("*/*")) },
         onImportFolder = { f -> library = false; model.import(android.net.Uri.fromFile(f)) },
         onNewMachine = { library = false; containerFrom = it })
+    backupsFor?.let { img ->
+        val slots by model.backups.collectAsState()
+        BackupsSheet(img, slots, model.backupsDir(), onDismiss = { backupsFor = null },
+            onBackup = { label ->
+                if (model.vmRunning()) android.widget.Toast.makeText(ctx, R.string.backup_running_vm, android.widget.Toast.LENGTH_LONG).show()
+                else { backupsFor = null; model.backup(img, label) }
+            },
+            onRestore = { slot -> backupsFor = null; model.restore(slot) },
+            onDelete = { slot -> model.deleteBackup(slot) },
+            onImport = { pickBackup.launch(arrayOf("*/*")) })
+    }
     containerFrom?.let { src -> ContainerDialog(src, images, onDismiss = { containerFrom = null },
         onCreate = { from, name, copy, settings -> containerFrom = null; model.clone(from, name, copy, settings) }) }
 
@@ -519,7 +533,11 @@ private fun ImportCard(s: ImportState, onCancel: () -> Unit, onDismiss: () -> Un
                 if (s.active) LoadingIndicator(Modifier.size(40.dp)) else Icon(if (s.error != null) Icons.Rounded.Warning else Icons.Rounded.Android, null)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(when { s.error != null -> stringResource(R.string.import_failed); s.active -> stringResource(R.string.import_running); else -> stringResource(R.string.import_done) },
+                    Text(when (s.kind) {
+                        "backup" -> when { s.error != null -> stringResource(R.string.backup_failed); s.active -> stringResource(R.string.backup_progress); else -> stringResource(R.string.backup_saved) }
+                        "restore" -> when { s.error != null -> stringResource(R.string.restore_failed); s.active -> stringResource(R.string.restore_progress); else -> stringResource(R.string.restore_done) }
+                        else -> when { s.error != null -> stringResource(R.string.import_failed); s.active -> stringResource(R.string.import_running); else -> stringResource(R.string.import_done) }
+                    },
                         style = MaterialTheme.typography.titleMedium)
                     Text(s.file, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -533,9 +551,10 @@ private fun ImportCard(s: ImportState, onCancel: () -> Unit, onDismiss: () -> Un
                     Spacer(Modifier.height(8.dp))
                     Text(s.step, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                s.done != null && s.kind == "backup" -> Text(s.file, style = MaterialTheme.typography.bodyMedium)
                 s.done != null -> {
                     Text("${s.done.name} · ${s.done.displayVersion} · ${s.done.skin}", style = MaterialTheme.typography.bodyMedium)
-                    s.done.warnings.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+                    if (s.kind == "import") s.done.warnings.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
                 }
             }
             Spacer(Modifier.height(8.dp))
@@ -558,4 +577,76 @@ private fun HelpDialog(onDismiss: () -> Unit) {
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.ok)) } },
     )
+}
+
+/** Save slots of the whole phone: back up now, restore one as a new machine, delete, or bring one in from a file. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BackupsSheet(
+    img: GuestImage,
+    slots: List<app.aemu.core.Backups.Slot>,
+    where: String,
+    onDismiss: () -> Unit,
+    onBackup: (String) -> Unit,
+    onRestore: (app.aemu.core.Backups.Slot) -> Unit,
+    onDelete: (app.aemu.core.Backups.Slot) -> Unit,
+    onImport: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    var label by remember { mutableStateOf("") }
+    var deleting by remember { mutableStateOf<app.aemu.core.Backups.Slot?>(null) }
+    val fmt = remember { java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT) }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+            item {
+                Text(stringResource(R.string.backups), style = MaterialTheme.typography.headlineSmall)
+                Text(img.name, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(4.dp))
+                Text(stringResource(R.string.backups_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(16.dp))
+                OutlinedTextField(value = label, onValueChange = { label = it.take(40) }, singleLine = true,
+                    label = { Text(stringResource(R.string.backup_label)) }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onBackup(label.trim()) }) { Text(stringResource(R.string.backup_now)) }
+                    TextButton(onClick = onImport) { Text(stringResource(R.string.backup_import)) }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(stringResource(R.string.backup_where, where), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.backup_restore_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                if (slots.isEmpty()) Text(stringResource(R.string.backup_none), style = MaterialTheme.typography.bodyMedium)
+            }
+            items(slots, key = { it.file.path }) { slot ->
+                val mine = slot.machineId == img.id
+                ListItem(
+                    headlineContent = { Text(slot.label.ifBlank { fmt.format(java.util.Date(slot.createdAt)) }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = {
+                        Text(listOfNotNull(
+                            if (mine) stringResource(R.string.backup_this) else slot.machine,
+                            if (slot.label.isNotBlank()) fmt.format(java.util.Date(slot.createdAt)) else null,
+                            Formatter.formatShortFileSize(ctx, slot.size),
+                        ).joinToString(" · "), maxLines = 2)
+                    },
+                    trailingContent = {
+                        Row {
+                            TextButton(onClick = { onRestore(slot) }) { Text(stringResource(R.string.backup_restore)) }
+                            IconButton(onClick = { deleting = slot }) { Icon(Icons.Rounded.Delete, stringResource(R.string.delete)) }
+                        }
+                    },
+                )
+            }
+        }
+    }
+    deleting?.let { slot ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            icon = { Icon(Icons.Rounded.Delete, null) },
+            title = { Text(stringResource(R.string.backup_delete_title)) },
+            text = { Text(slot.file.name) },
+            confirmButton = { Button(onClick = { onDelete(slot); deleting = null },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text(stringResource(R.string.delete)) } },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
 }

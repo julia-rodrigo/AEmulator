@@ -110,6 +110,11 @@ android {
         noCompress += listOf("payload", "tar", "gz", "so", "img")
     }
 
+    testOptions {
+        // ContextWrapper and friends in plain JVM tests (BackupsTest)
+        unitTests.isReturnDefaultValues = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -143,6 +148,7 @@ dependencies {
     implementation("com.github.junrar:junrar:7.5.5")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
 
 // sh: ./gradlew :app:copyReleaseApks -> release-apks/<version>/app.aemu.apk and app.aemu.0003.apk

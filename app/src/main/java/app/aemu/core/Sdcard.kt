@@ -44,6 +44,9 @@ object Sdcard {
     fun hostDir(paths: VmPaths): File? =
         runCatching { File(File(paths.bin, "sdcard.path").readText().trim()) }.getOrNull()?.takeIf { it.isDirectory }
 
+    /** Where [setup] puts the card folder of [img] (the first writable place), without touching the guest tree. */
+    fun dirFor(ctx: Context, img: GuestImage): File? = choose(ctx, img) {}
+
     private fun choose(ctx: Context, img: GuestImage, log: (String) -> Unit): File? {
         val safe = img.name.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").take(40).ifBlank { img.id }
         val tries = ArrayList<File>()

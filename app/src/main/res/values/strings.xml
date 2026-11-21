@@ -211,4 +211,22 @@
     <string name="m_vnc_started">VNC: %1$s, password %2$s</string>
     <string name="as_led">Notification light</string>
     <string name="as_led_sub">Show the guest phone’s LED above its screen</string>
+    <string name="backups">Backups</string>
+    <string name="backups_sub">Saves of the whole phone: firmware, apps, game progress, settings and memory card.</string>
+    <string name="backup_now">Back up now</string>
+    <string name="backup_label">Name of this save (optional)</string>
+    <string name="backup_where">Saved in %1$s. They stay when the app is uninstalled; copy them to a computer to keep them safe, and put them back in this folder (or use Import backup file) to restore.</string>
+    <string name="backup_none">No backups yet.</string>
+    <string name="backup_restore">Restore</string>
+    <string name="backup_import">Import backup file</string>
+    <string name="backup_running_vm">Stop the virtual phone first, then back it up.</string>
+    <string name="backup_delete_title">Delete this backup?</string>
+    <string name="backup_restore_hint">Restoring adds it as a new machine; the current one stays as it is.</string>
+    <string name="backup_this">this machine</string>
+    <string name="backup_progress">Saving backup</string>
+    <string name="backup_saved">Backup saved</string>
+    <string name="backup_failed">Backup failed</string>
+    <string name="restore_progress">Restoring backup</string>
+    <string name="restore_done">Backup restored</string>
+    <string name="restore_failed">Restore failed</string>
 </resources>

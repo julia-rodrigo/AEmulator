@@ -23,6 +23,8 @@ data class ImportState(
     val log: List<String> = emptyList(),
     val error: String? = null,
     val done: GuestImage? = null,
+    /** what runs: "import" (firmware, copy), "backup" or "restore" */
+    val kind: String = "import",
 )
 
 class LibraryModel(app: Application) : AndroidViewModel(app) {
@@ -41,14 +43,21 @@ class LibraryModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun import(uri: Uri) {
-        if (_import.value.active) return
+    private fun displayName(uri: Uri): String {
         val ctx = getApplication<Application>()
-        val name = runCatching {
+        return runCatching {
             ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
                 if (c.moveToFirst()) c.getString(0) else null
             }
         }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/') ?: "firmware"
+    }
+
+    fun import(uri: Uri) {
+        if (_import.value.active) return
+        val ctx = getApplication<Application>()
+        val name = displayName(uri)
+        // a backup picked in the import dialog is restored, not imported as firmware
+        if (name.endsWith(app.aemu.core.Backups.EXT, true)) { restore(name) { ctx.contentResolver.openInputStream(uri) ?: error("cannot open $name") }; return }
         _import.value = ImportState(active = true, file = name, step = "Starting")
         viewModelScope.launch(Dispatchers.IO) {
             val log = ArrayList<String>()
@@ -86,6 +95,55 @@ class LibraryModel(app: Application) : AndroidViewModel(app) {
                 _import.value = _import.value.copy(active = false, error = t.message ?: t.toString())
             } finally { refresh() }
         }
+    }
+
+    private val _backups = MutableStateFlow<List<app.aemu.core.Backups.Slot>>(emptyList())
+    val backups: StateFlow<List<app.aemu.core.Backups.Slot>> = _backups
+
+    fun refreshBackups() {
+        viewModelScope.launch { _backups.value = withContext(Dispatchers.IO) { app.aemu.core.Backups.list(getApplication()) } }
+    }
+
+    fun backupsDir(): String = app.aemu.core.Backups.dir(getApplication()).absolutePath
+
+    fun backup(img: GuestImage, label: String) {
+        if (_import.value.active) return
+        val ctx = getApplication<Application>()
+        cloneCancelled = false
+        _import.value = ImportState(active = true, file = img.name, step = "Starting", kind = "backup")
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val f = app.aemu.core.Backups.create(ctx, img, label, { cloneCancelled }) { step, p ->
+                    _import.value = _import.value.copy(step = step, progress = p)
+                }
+                _import.value = _import.value.copy(active = false, file = f.name, step = "Done", progress = 1f, done = img)
+            } catch (t: Throwable) {
+                _import.value = _import.value.copy(active = false, error = t.message ?: t.toString())
+            } finally { refreshBackups() }
+        }
+    }
+
+    fun restore(slot: app.aemu.core.Backups.Slot) = restore(slot.file.name) { slot.file.inputStream() }
+
+    private fun restore(name: String, open: () -> java.io.InputStream) {
+        if (_import.value.active) return
+        val ctx = getApplication<Application>()
+        cloneCancelled = false
+        _import.value = ImportState(active = true, file = name, step = "Starting", kind = "restore")
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val img = app.aemu.core.Backups.restore(ctx, open, { cloneCancelled }) { step, p ->
+                    _import.value = _import.value.copy(step = step, progress = p)
+                }
+                _import.value = _import.value.copy(active = false, done = img, step = "Done", progress = 1f)
+            } catch (t: Throwable) {
+                _import.value = _import.value.copy(active = false, error = t.message ?: t.toString())
+            } finally { refresh() }
+        }
+    }
+
+    fun deleteBackup(slot: app.aemu.core.Backups.Slot) {
+        viewModelScope.launch(Dispatchers.IO) { slot.file.delete(); refreshBackups() }
     }
 
     fun cancelImport() { importer?.cancelled = true; cloneCancelled = true }

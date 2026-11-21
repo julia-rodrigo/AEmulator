@@ -39,6 +39,13 @@ https://play.google.com/store/apps/details?id=com.com2us.elpise.normal.freefull.
 
 If you have the game's APK yourself, install it from the **⋮** menu → **Install APK**.
 
+## Save your progress
+
+On the main screen, open **⋮** on the machine → **Backups** → **Back up now** (stop the virtual phone first). Each
+backup is a `.aemu` file in `Internal storage/AEmulator/Backups`, with the whole phone: Elphis, its saves and the
+memory card. Make as many as you like; **Restore** adds one back as a new machine. Copy them to a computer to keep
+them safe, even across an uninstall, and bring one back with **Import backup file**.
+
 ## If something goes wrong
 
 - Sounds stop after a while: update to a build with the sound-track fix (see the CHANGELOG) and restart the virtual
