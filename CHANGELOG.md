@@ -8,6 +8,7 @@
 - Rapid tapping no longer stalls the app: touch events go to the guest from their own thread, and stale finger moves are merged.
 - When the guest still runs out of sound tracks, its track list is written to the host log (and again 15 s later).
 - A Nexus 4 firmware gets the settings Elphis was tested with at import (software rendering, 512 MB RAM); guide in `docs/play-elphis.md`.
+- Uninstalling asks whether to keep the app's data (imported firmware, everything inside the virtual phone); reinstalling a build signed with the same key brings it back.
 - Debug builds are signed with a shared test key from `app/test-signing` when the file is there, so test builds install over each other as updates.
 
 ### Emulation
