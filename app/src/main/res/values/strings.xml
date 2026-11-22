@@ -212,6 +212,14 @@
     <string name="as_led">Notification light</string>
     <string name="as_led_sub">Show the guest phone’s LED above its screen</string>
     <string name="backups">Backups</string>
+    <string name="m_quicksave">Quick save</string>
+    <string name="qs_packing">Saved, packing it in the background%1$s</string>
+    <string name="qs_done">Quick save ready: %1$s</string>
+    <string name="qs_failed">Quick save failed: %1$s</string>
+    <string name="qs_kind">quick save</string>
+    <string name="qs_other_machine">for %1$s</string>
+    <string name="qs_restore_title">Put this quick save back?</string>
+    <string name="qs_restore_text">%1$s goes back to this save: its apps, game progress and settings are replaced. The memory card stays as it is.</string>
     <string name="backups_sub">Saves of the whole phone: firmware, apps, game progress, settings and memory card.</string>
     <string name="backup_now">Back up now</string>
     <string name="backup_label">Name of this save (optional)</string>

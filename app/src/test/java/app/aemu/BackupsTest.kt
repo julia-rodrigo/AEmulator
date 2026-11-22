@@ -106,4 +106,52 @@ class BackupsTest {
         assertFalse(File(tmp, "through-link.txt").exists())
         tmp.deleteRecursively()
     }
+
+    @Test fun quickSaveAndPutBack() {
+        val tmp = Files.createTempDirectory("aemu-quick").toFile()
+        Environment.storage = File(tmp, "storage").apply { mkdirs() }
+        val ctx = Ctx(tmp)
+        val img = GuestImage(id = "qqq234", name = "Google Nexus 4", release = "4.4.4", api = 19, brand = "google", model = "Nexus 4",
+            skin = "AOSP", engine = Engine.KK, abi = "armeabi-v7a", bootclasspath = "", exports = emptyMap(), dirs = emptyList(),
+            services = emptyList(), sdcardPath = "/sdcard", settings = VmSettings(), createdAt = 1L)
+        ImageStore.save(ctx, img)
+        val p = VmPaths(ctx, img.id)
+        val sysFile = File(p.root, "system/build.prop").apply { parentFile!!.mkdirs(); writeText("ro.x=1") }
+        val dex = File(p.root, "data/dalvik-cache/system@app@Game.apk@classes.dex").apply { parentFile!!.mkdirs(); writeText("DEX") }
+        val save = File(p.root, "data/data/com.com2us.elpise/files/save.dat").apply { parentFile!!.mkdirs(); writeText("level 10") }
+        val cache = File(p.root, "data/data/com.com2us.elpise/cache/tmp.bin").apply { parentFile!!.mkdirs(); writeText("junk") }
+        val ownerOf = { f: File -> Os.lstat(f.path).let { String.format("%016x %016x", it.st_dev, it.st_ino) } }
+        p.owners.writeText("${ownerOf(sysFile)} 000003e8 000003e8\n${ownerOf(dex)} 000003e8 000003e8\n${ownerOf(save)} 0000273a 0000273a\n")
+
+        var pauses = 0; var resumes = 0
+        val f = Backups.quickSave(ctx, img, "", { pauses++ }, { resumes++ }) {}
+        assertEquals(1, pauses); assertEquals(1, resumes)
+        assertTrue(f.name.contains("Quick save"))
+        val slot = Backups.list(ctx).single()
+        assertEquals("data", slot.kind); assertEquals(img.id, slot.machineId)
+
+        // play on: progress changes, a new file appears, the save's file goes
+        save.delete()
+        File(p.root, "data/data/com.com2us.elpise/files/later.dat").writeText("level 12")
+        Backups.restoreData(ctx, img, { f.inputStream() }) { _, _ -> }
+
+        val save2 = File(p.root, "data/data/com.com2us.elpise/files/save.dat")
+        assertEquals("level 10", save2.readText())
+        assertFalse(File(p.root, "data/data/com.com2us.elpise/files/later.dat").exists())
+        assertFalse(File(p.root, "data/data/com.com2us.elpise/cache/tmp.bin").exists())   // caches are not saved
+        assertEquals("DEX", File(p.root, "data/dalvik-cache/system@app@Game.apk@classes.dex").readText())
+        assertEquals("ro.x=1", sysFile.readText())
+        val rows = p.owners.readLines().filter { it.isNotBlank() }.toSet()
+        assertEquals(setOf("${ownerOf(sysFile)} 000003e8 000003e8",
+            "${ownerOf(File(p.root, "data/dalvik-cache/system@app@Game.apk@classes.dex"))} 000003e8 000003e8",
+            "${ownerOf(save2)} 0000273a 0000273a"), rows)
+        // a full restore refuses a quick save
+        assertTrue(runCatching { Backups.restore(ctx, { f.inputStream() }, { false }) { _, _ -> } }.isFailure)
+        // the guest goes on even when the copy fails
+        pauses = 0; resumes = 0
+        ImageStore.wipe(File(p.root, "data")); File(p.root, "data").writeText("not a folder")
+        runCatching { Backups.quickSave(ctx, img, "", { pauses++ }, { resumes++ }) {} }
+        assertEquals(pauses, resumes)
+        tmp.deleteRecursively()
+    }
 }

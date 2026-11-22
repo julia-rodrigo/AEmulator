@@ -309,7 +309,10 @@ AlertDialog(
                 if (model.vmRunning()) android.widget.Toast.makeText(ctx, R.string.backup_running_vm, android.widget.Toast.LENGTH_LONG).show()
                 else { backupsFor = null; model.backup(img, label) }
             },
-            onRestore = { slot -> backupsFor = null; model.restore(slot) },
+            onRestore = { slot ->
+                if (slot.kind == "data" && model.vmRunning()) android.widget.Toast.makeText(ctx, R.string.backup_running_vm, android.widget.Toast.LENGTH_LONG).show()
+                else { backupsFor = null; if (slot.kind == "data") model.restoreData(img, slot) else model.restore(slot) }
+            },
             onDelete = { slot -> model.deleteBackup(slot) },
             onImport = { pickBackup.launch(arrayOf("*/*")) })
     }
@@ -595,6 +598,7 @@ private fun BackupsSheet(
     val ctx = LocalContext.current
     var label by remember { mutableStateOf("") }
     var deleting by remember { mutableStateOf<app.aemu.core.Backups.Slot?>(null) }
+    var putBack by remember { mutableStateOf<app.aemu.core.Backups.Slot?>(null) }
     val fmt = remember { java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
@@ -623,6 +627,7 @@ private fun BackupsSheet(
                     headlineContent = { Text(slot.label.ifBlank { fmt.format(java.util.Date(slot.createdAt)) }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = {
                         Text(listOfNotNull(
+                            if (slot.kind == "data") stringResource(R.string.qs_kind) else null,
                             if (mine) stringResource(R.string.backup_this) else slot.machine,
                             if (slot.label.isNotBlank()) fmt.format(java.util.Date(slot.createdAt)) else null,
                             Formatter.formatShortFileSize(ctx, slot.size),
@@ -630,13 +635,23 @@ private fun BackupsSheet(
                     },
                     trailingContent = {
                         Row {
-                            TextButton(onClick = { onRestore(slot) }) { Text(stringResource(R.string.backup_restore)) }
+                            // a quick save only goes back onto the machine it came from
+                            if (slot.kind != "data" || mine) TextButton(onClick = { if (slot.kind == "data") putBack = slot else onRestore(slot) }) { Text(stringResource(R.string.backup_restore)) }
                             IconButton(onClick = { deleting = slot }) { Icon(Icons.Rounded.Delete, stringResource(R.string.delete)) }
                         }
                     },
                 )
             }
         }
+    }
+    putBack?.let { slot ->
+        AlertDialog(
+            onDismissRequest = { putBack = null },
+            title = { Text(stringResource(R.string.qs_restore_title)) },
+            text = { Text(stringResource(R.string.qs_restore_text, img.name)) },
+            confirmButton = { Button(onClick = { putBack = null; onRestore(slot) }) { Text(stringResource(R.string.backup_restore)) } },
+            dismissButton = { TextButton(onClick = { putBack = null }) { Text(stringResource(R.string.cancel)) } },
+        )
     }
     deleting?.let { slot ->
         AlertDialog(

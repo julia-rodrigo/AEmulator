@@ -125,6 +125,23 @@ class LibraryModel(app: Application) : AndroidViewModel(app) {
 
     fun restore(slot: app.aemu.core.Backups.Slot) = restore(slot.file.name) { slot.file.inputStream() }
 
+    /** puts a quick save back onto [img] (stopped) */
+    fun restoreData(img: GuestImage, slot: app.aemu.core.Backups.Slot) {
+        if (_import.value.active) return
+        val ctx = getApplication<Application>()
+        _import.value = ImportState(active = true, file = slot.file.name, step = "Starting", kind = "restore")
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                app.aemu.core.Backups.restoreData(ctx, img, { slot.file.inputStream() }) { step, p ->
+                    _import.value = _import.value.copy(step = step, progress = p)
+                }
+                _import.value = _import.value.copy(active = false, done = ImageStore.get(ctx, img.id) ?: img, step = "Done", progress = 1f)
+            } catch (t: Throwable) {
+                _import.value = _import.value.copy(active = false, error = t.message ?: t.toString())
+            } finally { refresh() }
+        }
+    }
+
     private fun restore(name: String, open: () -> java.io.InputStream) {
         if (_import.value.active) return
         val ctx = getApplication<Application>()

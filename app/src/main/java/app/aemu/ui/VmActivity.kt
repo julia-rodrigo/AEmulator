@@ -101,6 +101,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
@@ -343,6 +344,31 @@ class VmActivity : ComponentActivity() {
         if (::guest.isInitialized) guest.stop()
         shellRx?.let { runCatching { unregisterReceiver(it) } }
         super.onDestroy()
+    }
+
+    @Volatile private var saving = false
+
+    /** Quick save: the guest pauses while its /data is copied, then goes on; the copy is packed in the background. */
+    private fun quickSave() {
+        if (saving) return
+        saving = true
+        val toast = { id: Int, arg: String -> runOnUiThread { android.widget.Toast.makeText(this, getString(id, arg), android.widget.Toast.LENGTH_SHORT).show() } }
+        thread(name = "quick-save") {
+            try {
+                val t0 = android.os.SystemClock.uptimeMillis()
+                var paused = 0L
+                val f = app.aemu.core.Backups.quickSave(applicationContext, vm.img, "",
+                    pause = { vm.freeze(true); paused = android.os.SystemClock.uptimeMillis() },
+                    resume = { vm.freeze(false); vm.log("quick save: guest paused ${android.os.SystemClock.uptimeMillis() - paused} ms") }) { step ->
+                    if (step == "pack") toast(R.string.qs_packing, "")
+                }
+                vm.log("quick save: ${f.name} (${f.length() shr 20} MB, ${(android.os.SystemClock.uptimeMillis() - t0) / 1000} s)")
+                toast(R.string.qs_done, f.nameWithoutExtension)
+            } catch (t: Throwable) {
+                vm.log("quick save failed: ${t.message}")
+                toast(R.string.qs_failed, t.message ?: t.toString())
+            } finally { saving = false }
+        }
     }
 
     private fun stopVm() {
@@ -786,6 +812,9 @@ class VmActivity : ComponentActivity() {
                         leadingIcon = { Icon(Icons.Rounded.RestartAlt, null) },
                         enabled = vm.recoveryMode || app.aemu.core.RecoveryImage.installed(vm.paths),
                         onClick = { menu = false; rebootVm(!vm.recoveryMode) })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_quicksave)) }, leadingIcon = { Icon(Icons.Rounded.Backup, null) },
+                        enabled = !vm.recoveryMode && state == GuestVm.State.RUNNING,
+                        onClick = { menu = false; quickSave() })
                     DropdownMenuItem(text = { Text(stringResource(R.string.shutdown)) }, leadingIcon = { Icon(Icons.Rounded.Close, null) },
                         onClick = { menu = false; stopVm() })
                 }

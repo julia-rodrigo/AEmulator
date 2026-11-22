@@ -46,6 +46,9 @@ backup is a `.aemu` file in `Internal storage/AEmulator/Backups`, with the whole
 memory card. Make as many as you like; **Restore** adds one back as a new machine. Copy them to a computer to keep
 them safe, even across an uninstall, and bring one back with **Import backup file**.
 
+While playing, **⋮ → Quick save** saves your progress without stopping: the phone pauses for a moment, then goes
+on. To go back to a quick save, stop the phone, then **⋮** on the machine → **Backups** → **Restore** on that save.
+
 ## If something goes wrong
 
 - Sounds stop after a while: update to a build with the sound-track fix (see the CHANGELOG) and restart the virtual
