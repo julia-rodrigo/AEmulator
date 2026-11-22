@@ -154,4 +154,39 @@ class BackupsTest {
         assertEquals(pauses, resumes)
         tmp.deleteRecursively()
     }
+
+    @Test fun backupOfARunningMachinePausesItForItsData() {
+        val tmp = Files.createTempDirectory("aemu-live").toFile()
+        Environment.storage = File(tmp, "storage").apply { mkdirs() }
+        val ctx = Ctx(tmp)
+        val img = GuestImage(id = "liv234", name = "Google Nexus 4", release = "4.4.4", api = 19, brand = "google", model = "Nexus 4",
+            skin = "AOSP", engine = Engine.KK, abi = "armeabi-v7a", bootclasspath = "", exports = emptyMap(), dirs = emptyList(),
+            services = emptyList(), sdcardPath = "/sdcard", settings = VmSettings(), createdAt = 1L)
+        ImageStore.save(ctx, img)
+        val p = VmPaths(ctx, img.id)
+        File(p.root, "system/build.prop").apply { parentFile!!.mkdirs(); writeText("ro.x=1") }
+        File(p.root, "data/dalvik-cache/x.dex").apply { parentFile!!.mkdirs(); writeText("DEX") }
+        File(p.root, "data/data/com.com2us.elpise/files/save.dat").apply { parentFile!!.mkdirs(); writeText("level 10") }
+        // a "guest process" of this machine: its command line names the image folder, like qemu's do
+        val guest = ProcessBuilder("sh", "-c", "echo \$\$; sleep 60", "${p.root}/system/bin/app_process").start()
+        val pid = guest.inputStream.bufferedReader().readLine().trim().toInt()
+        fun state() = File("/proc/$pid/stat").readText().substringAfterLast(") ").first()
+        try {
+            Thread.sleep(200)
+            var stateWhilePaused = '?'
+            val f = Backups.create(ctx, img, "live", { false }) { step, _ -> if (step == "pause") stateWhilePaused = state() }
+            assertEquals('T', stateWhilePaused)          // stopped while /data was copied
+            assertNotEquals('T', state())                 // and going on afterwards
+            val r = Backups.restore(ctx, { f.inputStream() }, { false }) { _, _ -> }
+            val q = VmPaths(ctx, r.id)
+            assertEquals("level 10", File(q.root, "data/data/com.com2us.elpise/files/save.dat").readText())
+            assertEquals("DEX", File(q.root, "data/dalvik-cache/x.dex").readText())
+            assertEquals("ro.x=1", File(q.root, "system/build.prop").readText())
+            // a quick save fits another machine with the same firmware
+            val qs = Backups.quickSave(ctx, img, "", { }, { }) {}
+            val slot = Backups.list(ctx).first { it.file == qs }
+            assertTrue(Backups.fits(slot, r))
+            assertFalse(Backups.fits(slot, r.copy(id = "other1", release = "5.1.1")))
+        } finally { guest.destroyForcibly(); tmp.deleteRecursively() }
+    }
 }

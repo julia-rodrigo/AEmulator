@@ -41,13 +41,13 @@ If you have the game's APK yourself, install it from the **⋮** menu → **Inst
 
 ## Save your progress
 
-On the main screen, open **⋮** on the machine → **Backups** → **Back up now** (stop the virtual phone first). Each
+On the main screen, open **⋮** on the machine → **Backups** → **Back up now** (it can keep running: it pauses only for a moment). Each
 backup is a `.aemu` file in `Internal storage/AEmulator/Backups`, with the whole phone: Elphis, its saves and the
 memory card. Make as many as you like; **Restore** adds one back as a new machine. Copy them to a computer to keep
 them safe, even across an uninstall, and bring one back with **Import backup file**.
 
 While playing, **⋮ → Quick save** saves your progress without stopping: the phone pauses for a moment, then goes
-on. To go back to a quick save, stop the phone, then **⋮** on the machine → **Backups** → **Restore** on that save.
+on. To go back to a quick save, stop the phone, then **⋮** on the machine → **Backups** → **Restore** on that save. A quick save also fits any other Nexus 4 4.4.4 machine, so you can hand it to a friend.
 
 ## If something goes wrong
 

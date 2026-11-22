@@ -305,10 +305,7 @@ AlertDialog(
     backupsFor?.let { img ->
         val slots by model.backups.collectAsState()
         BackupsSheet(img, slots, model.backupsDir(), onDismiss = { backupsFor = null },
-            onBackup = { label ->
-                if (model.vmRunning()) android.widget.Toast.makeText(ctx, R.string.backup_running_vm, android.widget.Toast.LENGTH_LONG).show()
-                else { backupsFor = null; model.backup(img, label) }
-            },
+            onBackup = { label -> backupsFor = null; model.backup(img, label) },
             onRestore = { slot ->
                 if (slot.kind == "data" && model.vmRunning()) android.widget.Toast.makeText(ctx, R.string.backup_running_vm, android.widget.Toast.LENGTH_LONG).show()
                 else { backupsFor = null; if (slot.kind == "data") model.restoreData(img, slot) else model.restore(slot) }
@@ -635,8 +632,8 @@ private fun BackupsSheet(
                     },
                     trailingContent = {
                         Row {
-                            // a quick save only goes back onto the machine it came from
-                            if (slot.kind != "data" || mine) TextButton(onClick = { if (slot.kind == "data") putBack = slot else onRestore(slot) }) { Text(stringResource(R.string.backup_restore)) }
+                            // a quick save goes back onto its own machine or one with the same firmware
+                            if (slot.kind != "data" || app.aemu.core.Backups.fits(slot, img)) TextButton(onClick = { if (slot.kind == "data") putBack = slot else onRestore(slot) }) { Text(stringResource(R.string.backup_restore)) }
                             IconButton(onClick = { deleting = slot }) { Icon(Icons.Rounded.Delete, stringResource(R.string.delete)) }
                         }
                     },

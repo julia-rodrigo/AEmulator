@@ -38,7 +38,9 @@ object Backups {
     data class Slot(val file: File, val label: String, val machine: String, val release: String,
                     val machineId: String, val createdAt: Long, val size: Long,
                     /** "full" (the whole phone, restored as a new machine) or "data" (a quick save of its /data) */
-                    val kind: String = "full")
+                    val kind: String = "full",
+                    /** brand, model, release, api and skin of the machine it was taken from */
+                    val firmware: String = "")
 
     fun dir(ctx: Context): File {
         val pub = runCatching { File(Environment.getExternalStorageDirectory(), "AEmulator/Backups") }.getOrNull()
@@ -52,7 +54,8 @@ object Backups {
                 val h = f.inputStream().use { readHeader(it) }
                 val img = h.getJSONObject("image")
                 Slot(f, h.optString("label"), img.optString("name"), img.optString("release"), img.optString("id"),
-                    h.optLong("createdAt", f.lastModified()), f.length(), h.optString("kind", "full"))
+                    h.optLong("createdAt", f.lastModified()), f.length(), h.optString("kind", "full"),
+                    runCatching { firmwareOf(GuestImage.fromJson(img)) }.getOrDefault(""))
             }.getOrNull()
         }.sortedByDescending { it.createdAt }
 
@@ -67,8 +70,16 @@ object Backups {
 
     private fun isLink(f: File) = runCatching { OsConstants.S_ISLNK(Os.lstat(f.path).st_mode) }.getOrDefault(false)
 
-    /** Writes a backup of [img] (the machine must not be running) and returns its file. */
+    /**
+     * Writes a backup of [img] and returns its file. The machine may be running: its /data (all that changes while it
+     * runs) is copied aside first while the guest is paused for a moment, the rest is read as it is.
+     */
     fun create(ctx: Context, img: GuestImage, label: String, cancelled: () -> Boolean, progress: (String, Float) -> Unit): File {
+        val stage = File(ImageStore.imagesDir(ctx).parentFile, "backup-${img.id}")
+        try { return createFrom(ctx, img, label, stage, cancelled, progress) } finally { ImageStore.wipe(stage) }
+    }
+
+    private fun createFrom(ctx: Context, img: GuestImage, label: String, stage: File, cancelled: () -> Boolean, progress: (String, Float) -> Unit): File {
         val paths = VmPaths(ctx, img.id)
         val card = Sdcard.hostDir(paths)
         val sys = File(paths.root, "system")
@@ -90,6 +101,19 @@ object Backups {
             }
         }
         val ownersByPath = StringBuilder()
+        // /data of a running machine: copied aside under a pause (compiled code is read live below: it does not change)
+        ImageStore.wipe(stage)
+        val running = freezeGuest(img.id, true) > 0
+        var staged: File? = null
+        if (running) {
+            try {
+                progress("pause", 0f)
+                copyTree(File(paths.root, "data"), File(stage, "data"), "data", ::quickSkip) { rel, st ->
+                    owners[key(st)]?.let { ownersByPath.append(rel).append('\t').append(it).append('\n') }
+                }
+                staged = File(stage, "data")
+            } finally { freezeGuest(img.id, false) }
+        }
         var done = 0L
         try {
             val gz = GzipParameters().apply { compressionLevel = 1 }
@@ -102,10 +126,16 @@ object Backups {
                 tar.putArchiveEntry(TarArchiveEntry(HEADER).apply { size = hb.size.toLong() })
                 tar.write(hb); tar.closeArchiveEntry()
 
-                fun add(f: File, name: String, rootRel: String?) {
+                fun add(f: File, name: String, rootRel: String?, fromStage: Boolean = false) {
                     if (cancelled()) error("cancelled")
+                    // the staged /data stands in for the live one; its owners were taken while it was copied
+                    if (rootRel == "data" && staged != null && !fromStage) {
+                        add(staged, name, rootRel, true)
+                        File(paths.root, "data/dalvik-cache").takeIf { it.exists() }?.let { add(it, "$name/dalvik-cache", "data/dalvik-cache") }
+                        return
+                    }
                     val st = runCatching { Os.lstat(f.path) }.getOrNull() ?: return
-                    if (rootRel != null) owners[key(st)]?.let { ownersByPath.append(rootRel).append('\t').append(it).append('\n') }
+                    if (rootRel != null && !fromStage) owners[key(st)]?.let { ownersByPath.append(rootRel).append('\t').append(it).append('\n') }
                     when {
                         OsConstants.S_ISLNK(st.st_mode) -> {
                             if (rootRel == "system" && sysReal != null) { add(sysReal, name, rootRel); return }
@@ -119,7 +149,7 @@ object Backups {
                                 val r = rootRel?.let { if (it.isEmpty()) c else "$it/$c" }
                                 // the machine's runtime state is made anew at each start
                                 if (rootRel == "" && (c == "dev" || c == "proc")) continue
-                                add(File(f, c), "$name/$c", r)
+                                add(File(f, c), "$name/$c", r, fromStage)
                             }
                         }
                         OsConstants.S_ISREG(st.st_mode) -> {
@@ -247,6 +277,30 @@ object Backups {
     }
 
     // ------------------------------------------------------------------ quick saves (the phone keeps running)
+
+    /**
+     * Stops (or lets go on) every guest process of machine [id], from any process of this app: they run under its uid.
+     * Returns how many there were (0: the machine is not running).
+     */
+    fun freezeGuest(id: String, stop: Boolean): Int {
+        val marker = "/images/$id/"
+        val me = android.os.Process.myPid()
+        var n = 0
+        File("/proc").listFiles()?.forEach { d ->
+            val pid = d.name.toIntOrNull() ?: return@forEach
+            if (pid == me) return@forEach
+            val cmd = runCatching { String(File(d, "cmdline").readBytes(), Charsets.ISO_8859_1) }.getOrNull() ?: return@forEach
+            if (!cmd.contains(marker)) return@forEach
+            runCatching { android.os.Process.sendSignal(pid, if (stop) 19 /* SIGSTOP */ else 18 /* SIGCONT */); n++ }
+        }
+        return n
+    }
+
+    /** a quick save from [slot] fits [img]: the machine it was taken from, or one with the same firmware */
+    fun fits(slot: Slot, img: GuestImage): Boolean = slot.machineId == img.id ||
+        (slot.firmware.isNotEmpty() && slot.firmware == firmwareOf(img))
+
+    fun firmwareOf(img: GuestImage) = "${img.brand}|${img.model}|${img.release}|${img.api}|${img.skin}"
 
     /** what a quick save leaves out of /data: compiled code made anew, and app caches */
     private fun quickSkip(rel: String): Boolean {

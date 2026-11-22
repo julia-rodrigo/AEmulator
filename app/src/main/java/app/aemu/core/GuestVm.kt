@@ -1230,19 +1230,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
      * Stops (or lets go on) every process of this machine's guest, for a quick save that must not see files change
      * under it. The phone's own processes (this app, binderd) keep running.
      */
-    fun freeze(stop: Boolean): Int {
-        val marker = "/images/${img.id}/"
-        val me = android.os.Process.myPid()
-        var n = 0
-        File("/proc").listFiles()?.forEach { d ->
-            val pid = d.name.toIntOrNull() ?: return@forEach
-            if (pid == me) return@forEach
-            val cmd = runCatching { String(File(d, "cmdline").readBytes(), Charsets.ISO_8859_1) }.getOrNull() ?: return@forEach
-            if (!cmd.contains(marker)) return@forEach
-            runCatching { AProcess.sendSignal(pid, if (stop) 19 /* SIGSTOP */ else 18 /* SIGCONT */); n++ }
-        }
-        return n
-    }
+    fun freeze(stop: Boolean): Int = Backups.freezeGuest(img.id, stop)
 
     private fun guestLogHas(text: String): Boolean = runCatching {
         val f = File(paths.root, "dev/log/main")

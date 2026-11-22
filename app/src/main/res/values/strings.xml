@@ -227,7 +227,7 @@
     <string name="backup_none">No backups yet.</string>
     <string name="backup_restore">Restore</string>
     <string name="backup_import">Import backup file</string>
-    <string name="backup_running_vm">Stop the virtual phone first, then back it up.</string>
+    <string name="backup_running_vm">Stop the virtual phone first, then put the save back.</string>
     <string name="backup_delete_title">Delete this backup?</string>
     <string name="backup_restore_hint">Restoring adds it as a new machine; the current one stays as it is.</string>
     <string name="backup_this">this machine</string>
