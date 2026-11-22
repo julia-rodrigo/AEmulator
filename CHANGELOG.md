@@ -4,6 +4,7 @@
 
 ### Unreleased (test builds on this branch)
 - Game sound effects no longer stop for good after many sounds: the 2.3–4.4 engine's binder never told AudioFlinger when an app let go of a sound track, so all 32 tracks filled up and every new sound and song stayed silent until the virtual phone restarted. The guest shim now delivers those releases (`native/guestshim`, test: `native/guestshim/test/run.sh`).
+- Sound service no longer crashes after long play: a track is released only if AudioFlinger handed it to the app that lets it go, and only once. A service that crashed is restarted again once it has run 10 minutes, so the system no longer stays at "Booting system".
 - Clearer sound under load: the phone-side audio thread runs at audio priority with steady writes and stays frame-aligned; the guest audio driver waits for room instead of dropping pieces of sound, and keeps the guest's mixer on real time.
 - Rapid tapping no longer stalls the app: touch events go to the guest from their own thread, and stale finger moves are merged.
 - When the guest still runs out of sound tracks, its track list is written to the host log (and again 15 s later).

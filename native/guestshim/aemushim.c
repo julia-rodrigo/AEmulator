@@ -1022,7 +1022,7 @@ static int af_handle_take(unsigned h) {
 }
 
 /* owner side: objects released through a notice; binderd still knows them by these addresses */
-#define RELEASED_MAX 1024
+#define RELEASED_MAX 4096
 static struct { unsigned ptr, cookie; } g_released[RELEASED_MAX];
 static int g_released_next, g_released_any;
 static void released_add(unsigned ptr, unsigned cookie) {
@@ -1042,6 +1042,48 @@ static int released_take(unsigned ptr, unsigned cookie) {
     rel_unlock();
     return found;
 }
+/*
+ * owner side: the objects this process handed out in replies to IAudioFlinger calls, with the pid they went to. Only
+ * those are released, once, and only when the notice comes from that pid: a notice for anything else (a stale or
+ * repeated one, one binderd routed elsewhere) is dropped, so no object here loses a reference it still needs.
+ */
+#define HANDED_MAX 2048
+static struct { unsigned ptr, cookie, pid; } g_handed[HANDED_MAX];
+static int g_handed_next;
+static void handed_add(unsigned ptr, unsigned cookie, unsigned pid) {
+    rel_lock();
+    int at = -1;
+    for (int i = 0; i < HANDED_MAX; i++) if (g_handed[i].ptr == ptr && g_handed[i].cookie == cookie) { at = i; break; }
+    if (at < 0) {
+        for (int i = 0; i < HANDED_MAX && at < 0; i++) if (!g_handed[i].ptr) at = i;
+        /* full: the oldest goes (its object can then no longer be released: it stays, as before this) */
+        if (at < 0) { at = g_handed_next; g_handed_next = (g_handed_next + 1) % HANDED_MAX; }
+    }
+    g_handed[at].ptr = ptr; g_handed[at].cookie = cookie; g_handed[at].pid = pid;
+    rel_unlock();
+}
+static int handed_take(unsigned ptr, unsigned cookie, unsigned pid) {
+    int found = 0;
+    rel_lock();
+    for (int i = 0; i < HANDED_MAX; i++)
+        if (g_handed[i].ptr == ptr && g_handed[i].cookie == cookie && g_handed[i].pid == pid) {
+            g_handed[i].ptr = g_handed[i].cookie = g_handed[i].pid = 0; found = 1; break;
+        }
+    rel_unlock();
+    return found;
+}
+static void hand_out_objects(const unsigned *td, unsigned pid) {
+    const unsigned char *d = (const unsigned char *)(ulong)td[8];
+    const unsigned *offs = (const unsigned *)(ulong)td[9];
+    unsigned size = td[6], n = td[7] / 4;
+    if (!d || !offs || !pid) return;
+    for (unsigned i = 0; i < n; i++) {
+        if (offs[i] + 16 > size) continue;
+        const unsigned *o = (const unsigned *)(d + offs[i]);
+        if (o[0] == T_BINDER_ && o[2]) handed_add(o[2], o[3], pid);
+    }
+}
+
 /* an object at an address released before goes out again: the references binderd will not deliver this time */
 static void rerefer_sent_objects(const unsigned *td) {
     const unsigned char *d = (const unsigned char *)(ulong)td[8];
@@ -1060,17 +1102,18 @@ static void rerefer_sent_objects(const unsigned *td) {
 
 /* per thread: depth of its synchronous calls, the depth of a pending call to IAudioFlinger, notices to answer for */
 #define RT_MAX 64
-static struct { volatile int tid; int depth, af_level, swallow, left_len; unsigned left[2]; } g_rt[RT_MAX];
+static struct { volatile int tid; int depth, af_level, swallow, left_len; unsigned left[2]; int in_depth, in_af_level; unsigned in_af_pid; } g_rt[RT_MAX];
 static int rt_find(int tid, int add) {
     for (int k = 0; k < RT_MAX; k++) if (g_rt[k].tid == tid) return k;
     if (add) for (int k = 0; k < RT_MAX; k++) if (__sync_bool_compare_and_swap(&g_rt[k].tid, 0, tid)) {
         g_rt[k].depth = g_rt[k].af_level = g_rt[k].swallow = g_rt[k].left_len = 0;
+        g_rt[k].in_depth = g_rt[k].in_af_level = 0; g_rt[k].in_af_pid = 0;
         return k;
     }
     return -1;
 }
 static void rt_maybe_free(int k) {
-    if (k >= 0 && !g_rt[k].depth && !g_rt[k].af_level && !g_rt[k].swallow && !g_rt[k].left_len) g_rt[k].tid = 0;
+    if (k >= 0 && !g_rt[k].depth && !g_rt[k].af_level && !g_rt[k].swallow && !g_rt[k].left_len && !g_rt[k].in_depth) g_rt[k].tid = 0;
 }
 
 /*
@@ -1141,15 +1184,33 @@ static void release_after_read(int fd, int tid, struct bwr *b, long start, int w
             if (g_rt[k].depth > 0) g_rt[k].depth--;
             if (g_rt[k].af_level > g_rt[k].depth) g_rt[k].af_level = 0;
         }
+        if (cmd == BR_TRANSACTION_ && len >= 44 && !(((const unsigned *)(rb + p + 4))[3] & TF_ONE_WAY_)) {
+            /* an incoming call this thread will answer with BC_REPLY: is it one to AudioFlinger? */
+            const unsigned *td = (const unsigned *)(rb + p + 4);
+            if (k < 0) k = rt_find(tid, 1);
+            if (k >= 0) {
+                g_rt[k].in_depth++;
+                if (iface_is((const unsigned char *)td, "android.media.IAudioFlinger", 27)) {
+                    g_rt[k].in_af_level = g_rt[k].in_depth; g_rt[k].in_af_pid = td[4];
+                }
+            }
+        }
         if (cmd == BR_TRANSACTION_ && len >= 44) {
             const unsigned *td = (const unsigned *)(rb + p + 4);
             if (td[2] == AEMU_RELEASE_CODE && (td[3] & TF_ONE_WAY_) && td[0] && td[6] == 4 && td[8]
                 && *(const unsigned *)(ulong)td[8] == AEMU_RELEASE_MARK) {
-                unsigned ptr = td[0], cookie = td[1], buf = td[8];
+                unsigned ptr = td[0], cookie = td[1], buf = td[8], from = td[4];
                 unsigned rel[6] = { BR_RELEASE_, ptr, cookie, BR_DECREFS_, ptr, cookie };
                 unsigned fr[2] = { BC_FREE_BUFFER_, buf };
                 struct bwr q = { (long)sizeof fr, 0, (ulong)fr, 0, 0, 0 };
                 bwr_raw(fd, &q);
+                if (!handed_take(ptr, cookie, from)) {
+                    /* not ours to release: the notice just goes */
+                    unsigned *w = (unsigned *)(rb + p);
+                    for (long i = 0; i < len; i += 4) w[i / 4] = BR_NOOP_;
+                    p += len;
+                    continue;
+                }
                 released_add(ptr, cookie);
                 int held = 0;
                 if (waiting) {
@@ -1190,6 +1251,16 @@ EXPORT int ioctl(int fd, int req, void *arg) {
         if (cmd == BC_TRANSACTION_ && p + 4 + 40 <= b->write_size) pin_service((const unsigned char *)(b->write_buffer + p + 4));
         if ((cmd == BC_TRANSACTION_ || cmd == BC_REPLY_) && p + 4 + 40 <= b->write_size)
             rerefer_sent_objects((const unsigned *)(b->write_buffer + p + 4));
+        if (cmd == BC_REPLY_ && p + 4 + 40 <= b->write_size) {
+            int k = rt_find(tid, 0);
+            if (k >= 0 && g_rt[k].in_depth > 0) {
+                if (g_rt[k].in_af_level == g_rt[k].in_depth)
+                    hand_out_objects((const unsigned *)(b->write_buffer + p + 4), g_rt[k].in_af_pid);
+                g_rt[k].in_depth--;
+                if (g_rt[k].in_af_level > g_rt[k].in_depth) { g_rt[k].in_af_level = 0; g_rt[k].in_af_pid = 0; }
+                rt_maybe_free(k);
+            }
+        }
         if (cmd == BC_TRANSACTION_ && p + 4 + 40 <= b->write_size && !(*(unsigned *)(b->write_buffer + p + 4 + 12) & TF_ONE_WAY_)) {
             int k = rt_find(tid, 1);
             if (k >= 0) {

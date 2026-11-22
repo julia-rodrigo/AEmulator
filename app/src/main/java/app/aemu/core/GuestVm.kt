@@ -1044,6 +1044,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         runCatching { power.writeText(""); power.setWritable(true, false) }
         Thread({
             var restarts = HashMap<String, Int>()
+            val lastRestart = HashMap<String, Long>()
             while (!stopping) {
                 Thread.sleep(3000)
                 if (power.length() > 0) { val v = runCatching { power.readText().trim() }.getOrDefault("reboot"); power.writeText(""); powerRequest(v) }
@@ -1081,6 +1082,10 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
                         synchronized(procs) { procs.remove(name) }
                         continue
                     }
+                    // a service that ran 10 minutes since its last restart starts counting again: the limit is for
+                    // crash loops, not for a long session (mediaserver left dead keeps the system booting forever)
+                    if (System.currentTimeMillis() - lastRestart.getOrDefault(name, 0L) > 600_000L) restarts.remove(name)
+                    lastRestart[name] = System.currentTimeMillis()
                     val n = restarts.getOrDefault(name, 0)
                     val svc = img.services.firstOrNull { it.name == name }
                         ?: if (name.contains("-hal-") && n < 3) servicePlan().firstOrNull { it.name == name } else null

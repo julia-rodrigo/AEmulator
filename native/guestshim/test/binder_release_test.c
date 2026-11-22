@@ -80,6 +80,20 @@ static void sync_call_reply_handle(const char *iface, unsigned handle, int neste
     unsigned char *rb = low(256); long got;
     do_ioctl(w, sizeof w, rb, 256, &got);
 }
+/* owner thread: an IAudioFlinger call from pid arrives, the reply hands out object (refs, obj) */
+static void owner_serves_af(int tid, unsigned pid, void *refs, void *obj) {
+    int save = cur_tid; cur_tid = tid;
+    unsigned sz; unsigned char *d = parcel_iface("android.media.IAudioFlinger", &sz);
+    unsigned in[11] = { BR_TRANSACTION_, 0x7000, 0x7004, 1, 0 /* sync */, pid, 10050, sz, 0, u(d), u(d) };
+    qlen = 0; q_u32(BR_NOOP_); q_put(in, sizeof in);
+    long got; do_ioctl(0, 0, low(256), 256, &got);
+    unsigned char *rd = low(64); unsigned *ro = (unsigned *)low(16);
+    unsigned *o = (unsigned *)(rd + 8); o[0] = T_BINDER_; o[1] = 0x17f; o[2] = u(refs); o[3] = u(obj); ro[0] = 8;
+    unsigned br[11] = { BC_REPLY_, 0, 0, 0, 0, 0, 0, 24, 4, u(rd), u(ro) };
+    qlen = 0; q_u32(BR_NOOP_); q_u32(BR_TRANSACTION_COMPLETE_);
+    do_ioctl(br, sizeof br, low(64), 64, &got);
+    cur_tid = save;
+}
 static int af_has(unsigned h) { for (int i = 0; i < AF_HANDLES; i++) if (g_af_handle[i] == h) return 1; return 0; }
 
 int main(void) {
@@ -135,6 +149,8 @@ int main(void) {
     cur_tid = 200; qlen = 0; nwrites = 0;
     int *refs = (int *)low(64); refs[0] = 5; refs[1] = 6;      /* weakref_impl: mStrong, mWeak */
     unsigned char *obj = low(64);
+    owner_serves_af(202, 1234, refs, obj);
+    cur_tid = 200; qlen = 0; nwrites = 0;
     static unsigned mark = AEMU_RELEASE_MARK;
     unsigned char *nbuf = low(16); *(unsigned *)nbuf = mark;
     unsigned tr[11] = { BR_TRANSACTION_, u(refs), u(obj), AEMU_RELEASE_CODE, 1, 1234, 10050, 4, 0, u(nbuf), u(nbuf) };
@@ -160,7 +176,9 @@ int main(void) {
     do_ioctl(br, sizeof br, low(64), 64, &got);
     CHECK(refs[0] == 6 && refs[1] == 7, "only once");
     printf("   same address, other cookie (binderd makes a new node itself): untouched\n");
-    qlen = 0; q_u32(BR_NOOP_); q_put(tr, sizeof tr);   /* release it again first */
+    /* scenario 7's reply above went out as a plain BC_REPLY (no AF call): hand it out through AF, then release */
+    owner_serves_af(202, 1234, refs, obj);
+    qlen = 0; q_u32(BR_NOOP_); q_put(tr, sizeof tr);
     do_ioctl(0, 0, low(256), 256, &got);
     o[3] = u(obj) + 16;
     qlen = 0; q_u32(BR_NOOP_); q_u32(BR_TRANSACTION_COMPLETE_);
@@ -168,6 +186,7 @@ int main(void) {
     CHECK(refs[0] == 6 && refs[1] == 7, "no extra references");
 
     printf("8. owner thread waiting for a reply gets the notice: it goes to the pool\n");
+    owner_serves_af(203, 1234, refs, obj);
     cur_tid = 300; qlen = 0; nwrites = 0;
     unsigned sz; unsigned char *d = parcel_iface("android.os.IFoo", &sz);
     unsigned call[11] = { BC_TRANSACTION_, 4, 0, 1, 0, 0, 0, sz, 0, u(d), u(d) };
@@ -208,6 +227,32 @@ int main(void) {
     CHECK(af_has(32), "AudioFlinger's reply handle 32 taken");
     k = rt_find(400, 0);
     CHECK(k < 0, "thread record freed");
+
+    printf("10. owner: notices that are not its to act on are dropped\n");
+    {
+        int *r2 = (int *)low(64); r2[0] = 3; r2[1] = 4; unsigned char *o2 = low(64);
+        owner_serves_af(204, 5555, r2, o2);
+        unsigned t2[11] = { BR_TRANSACTION_, u(r2), u(o2), AEMU_RELEASE_CODE, 1, 6666 /* other pid */, 10050, 4, 0, u(nbuf), u(nbuf) };
+        cur_tid = 205; qlen = 0; nwrites = 0; q_u32(BR_NOOP_); q_put(t2, sizeof t2);
+        rb = low(256); do_ioctl(0, 0, rb, 256, &got); r32 = (unsigned *)rb;
+        int noop = 1; for (int i = 0; i < 12; i++) noop &= r32[i] == BR_NOOP_;
+        CHECK(got == 48 && noop, "from another pid: only BR_NOOPs reach libbinder");
+        CHECK(nwrites == 1 && writes[0][0] == BC_FREE_BUFFER_, "its buffer is still freed");
+        t2[5] = 5555;
+        qlen = 0; q_u32(BR_NOOP_); q_put(t2, sizeof t2);
+        rb = low(256); do_ioctl(0, 0, rb, 256, &got); r32 = (unsigned *)rb;
+        CHECK(r32[1] == BR_RELEASE_ && r32[2] == u(r2), "from the right pid: released");
+        qlen = 0; q_u32(BR_NOOP_); q_put(t2, sizeof t2);
+        rb = low(256); do_ioctl(0, 0, rb, 256, &got); r32 = (unsigned *)rb;
+        noop = 1; for (int i = 0; i < 12; i++) noop &= r32[i] == BR_NOOP_;
+        CHECK(noop, "a second notice for it: dropped");
+        int *r3 = (int *)low(64); unsigned char *o3 = low(64);
+        unsigned t3[11] = { BR_TRANSACTION_, u(r3), u(o3), AEMU_RELEASE_CODE, 1, 5555, 10050, 4, 0, u(nbuf), u(nbuf) };
+        qlen = 0; q_u32(BR_NOOP_); q_put(t3, sizeof t3);
+        rb = low(256); do_ioctl(0, 0, rb, 256, &got); r32 = (unsigned *)rb;
+        noop = 1; for (int i = 0; i < 12; i++) noop &= r32[i] == BR_NOOP_;
+        CHECK(noop, "for an object never handed out: dropped");
+    }
 
     printf("\n%s (%d failures)\n", fails ? "FAILED" : "ALL PASSED", fails);
     return fails != 0;
