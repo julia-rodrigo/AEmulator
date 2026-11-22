@@ -153,7 +153,7 @@ object Backups {
                             }
                         }
                         OsConstants.S_ISREG(st.st_mode) -> {
-                            val e = TarArchiveEntry(name).apply { size = st.st_size; mode = st.st_mode; setModTime(st.st_mtime * 1000) }
+                            val e = TarArchiveEntry(name).apply { size = st.st_size; mode = st.st_mode; if (st.st_mtime > 0) setModTime(st.st_mtime * 1000) }
                             tar.putArchiveEntry(e)
                             f.inputStream().use { i ->
                                 val buf = ByteArray(1 shl 16)
@@ -325,7 +325,8 @@ object Backups {
             OsConstants.S_ISREG(st.st_mode) -> {
                 from.inputStream().use { i -> to.outputStream().use { i.copyTo(it, 1 shl 16) } }
                 runCatching { Os.chmod(to.path, st.st_mode and 0xfff) }
-                to.setLastModified(st.st_mtime * 1000)
+                // firmware files can carry dates before 1970, which setLastModified refuses
+                if (st.st_mtime > 0) to.setLastModified(st.st_mtime * 1000)
             }
         }
     }
@@ -383,7 +384,7 @@ object Backups {
                             for (c in f.list().orEmpty().sorted()) add(File(f, c), "$name/$c")
                         }
                         OsConstants.S_ISREG(st.st_mode) -> {
-                            tar.putArchiveEntry(TarArchiveEntry(name).apply { size = st.st_size; mode = st.st_mode; setModTime(st.st_mtime * 1000) })
+                            tar.putArchiveEntry(TarArchiveEntry(name).apply { size = st.st_size; mode = st.st_mode; if (st.st_mtime > 0) setModTime(st.st_mtime * 1000) })
                             f.inputStream().use { it.copyTo(tar, 1 shl 16) }
                             tar.closeArchiveEntry()
                         }

@@ -12,6 +12,7 @@
 - Uninstalling asks whether to keep the app's data (imported firmware, everything inside the virtual phone); reinstalling a build signed with the same key brings it back.
 - Backups: ⋮ → Backups on a machine saves the whole phone, also while it runs (it pauses only while its data is copied), (firmware, apps, game saves, settings, memory card) as a `.aemu` file in Internal storage/AEmulator/Backups, any number of them; Restore brings one back as a new machine; Import backup file (or the + import) restores one copied from a computer.
 - Quick save while playing: ⋮ → Quick save in the running phone pauses it for a moment while its data (apps, game progress, settings) is copied, then packs it in the background; Backups → Restore puts it back onto that machine or any machine with the same firmware (another person's too).
+- "Paste text from clipboard" asks first and shows the text: it types into whatever is open, a game included (an accidental tap made a character move and attack on its own). Quick save is at the top of the menu.
 - Debug builds are signed with a shared test key from `app/test-signing` when the file is there, so test builds install over each other as updates.
 
 ### Emulation

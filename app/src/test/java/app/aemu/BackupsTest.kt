@@ -120,6 +120,9 @@ class BackupsTest {
         val dex = File(p.root, "data/dalvik-cache/system@app@Game.apk@classes.dex").apply { parentFile!!.mkdirs(); writeText("DEX") }
         val save = File(p.root, "data/data/com.com2us.elpise/files/save.dat").apply { parentFile!!.mkdirs(); writeText("level 10") }
         val cache = File(p.root, "data/data/com.com2us.elpise/cache/tmp.bin").apply { parentFile!!.mkdirs(); writeText("junk") }
+        // firmware files can be dated before 1970 ("Negative time" on a phone)
+        val old = File(p.root, "data/system/old.xml").apply { parentFile!!.mkdirs(); writeText("old") }
+        Files.setLastModifiedTime(old.toPath(), java.nio.file.attribute.FileTime.fromMillis(-315619200000L))
         val ownerOf = { f: File -> Os.lstat(f.path).let { String.format("%016x %016x", it.st_dev, it.st_ino) } }
         p.owners.writeText("${ownerOf(sysFile)} 000003e8 000003e8\n${ownerOf(dex)} 000003e8 000003e8\n${ownerOf(save)} 0000273a 0000273a\n")
 
@@ -137,6 +140,7 @@ class BackupsTest {
 
         val save2 = File(p.root, "data/data/com.com2us.elpise/files/save.dat")
         assertEquals("level 10", save2.readText())
+        assertEquals("old", File(p.root, "data/system/old.xml").readText())
         assertFalse(File(p.root, "data/data/com.com2us.elpise/files/later.dat").exists())
         assertFalse(File(p.root, "data/data/com.com2us.elpise/cache/tmp.bin").exists())   // caches are not saved
         assertEquals("DEX", File(p.root, "data/dalvik-cache/system@app@Game.apk@classes.dex").readText())

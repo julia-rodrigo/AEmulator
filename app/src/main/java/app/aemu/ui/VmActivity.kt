@@ -403,9 +403,20 @@ class VmActivity : ComponentActivity() {
     /** Quote for the guest's /system/bin/sh. */
     private fun q(s: String) = "'" + s.replace("'", "'\\''") + "'"
 
-    private fun pasteToGuest() {
+    /** The clipboard is typed into the guest key by key (a game reads those keys too): ask before, showing what it is. */
+    private fun askPaste() {
         val text = getSystemService(ClipboardManager::class.java).primaryClip?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
         if (text.isEmpty()) { toast(getString(R.string.m_clip_empty)); return }
+        val preview = text.replace(Regex("\\s+"), " ").trim().let { if (it.length > 120) it.take(120) + "…" else it }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.m_paste_title)
+            .setMessage(getString(R.string.m_paste_text, preview))
+            .setPositiveButton(R.string.m_paste_go) { _, _ -> pasteToGuest(text) }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun pasteToGuest(text: String) {
         // Normalize line endings and truncate extreme paste payloads
         val lines = text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
         val safeLines = if (lines.size > 150) lines.take(150) else lines
@@ -752,6 +763,9 @@ class VmActivity : ComponentActivity() {
                     Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.menu))
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_quicksave)) }, leadingIcon = { Icon(Icons.Rounded.Backup, null) },
+                        enabled = !vm.recoveryMode && state == GuestVm.State.RUNNING,
+                        onClick = { menu = false; quickSave() })
                     DropdownMenuItem(text = { Text(stringResource(R.string.log)) }, leadingIcon = { Icon(Icons.Rounded.Terminal, null) },
                         onClick = { menu = false; showLog = true })
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_terminal)) }, leadingIcon = { Icon(Icons.Rounded.Code, null) },
@@ -779,7 +793,7 @@ class VmActivity : ComponentActivity() {
                             })
                         HorizontalDivider()
                         DropdownMenuItem(text = { Text(stringResource(R.string.m_paste)) }, leadingIcon = { Icon(Icons.Rounded.ContentPaste, null) },
-                            enabled = running, onClick = { menu = false; pasteToGuest() })
+                            enabled = running, onClick = { menu = false; askPaste() })
                         DropdownMenuItem(text = { Text(stringResource(R.string.m_sms)) }, leadingIcon = { Icon(Icons.Rounded.Sms, null) },
                             enabled = running, onClick = { menu = false; dialog = Dlg.SMS })
                         DropdownMenuItem(text = { Text(stringResource(R.string.m_call)) }, leadingIcon = { Icon(Icons.Rounded.Call, null) },
@@ -812,9 +826,6 @@ class VmActivity : ComponentActivity() {
                         leadingIcon = { Icon(Icons.Rounded.RestartAlt, null) },
                         enabled = vm.recoveryMode || app.aemu.core.RecoveryImage.installed(vm.paths),
                         onClick = { menu = false; rebootVm(!vm.recoveryMode) })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_quicksave)) }, leadingIcon = { Icon(Icons.Rounded.Backup, null) },
-                        enabled = !vm.recoveryMode && state == GuestVm.State.RUNNING,
-                        onClick = { menu = false; quickSave() })
                     DropdownMenuItem(text = { Text(stringResource(R.string.shutdown)) }, leadingIcon = { Icon(Icons.Rounded.Close, null) },
                         onClick = { menu = false; stopVm() })
                 }
