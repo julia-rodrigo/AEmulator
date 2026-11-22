@@ -371,7 +371,7 @@ class VmActivity : ComponentActivity() {
     @Volatile private var saving = false
 
     /** Quick save: the guest pauses while its /data is copied, then goes on; the copy is packed in the background. */
-    private fun quickSave() {
+    private fun quickSave(label: String = "", replaces: java.io.File? = null) {
         if (saving) return
         saving = true
         val toast = { id: Int, arg: String -> runOnUiThread { android.widget.Toast.makeText(this, getString(id, arg), android.widget.Toast.LENGTH_SHORT).show() } }
@@ -379,11 +379,13 @@ class VmActivity : ComponentActivity() {
             try {
                 val t0 = android.os.SystemClock.uptimeMillis()
                 var paused = 0L
-                val f = app.aemu.core.Backups.quickSave(applicationContext, vm.img, "",
+                val f = app.aemu.core.Backups.quickSave(applicationContext, vm.img, label,
                     pause = { vm.freeze(true); paused = android.os.SystemClock.uptimeMillis() },
                     resume = { vm.freeze(false); vm.log("quick save: guest paused ${android.os.SystemClock.uptimeMillis() - paused} ms") }) { step ->
                     if (step == "pack") toast(R.string.qs_packing, "")
                 }
+                // saved over a slot: the new file takes its place (the old one goes only once the new one is complete)
+                if (replaces != null && replaces != f) replaces.delete()
                 vm.log("quick save: ${f.name} (${f.length() shr 20} MB, ${(android.os.SystemClock.uptimeMillis() - t0) / 1000} s)")
                 toast(R.string.qs_done, f.nameWithoutExtension)
             } catch (t: Throwable) {
@@ -404,7 +406,7 @@ class VmActivity : ComponentActivity() {
         }
     }
 
-    private enum class Dlg { NONE, SMS, CALL, BATTERY, ADB, DEVICE }
+    private enum class Dlg { NONE, SMS, CALL, BATTERY, ADB, DEVICE, QUICKSAVE }
 
     // position of the floating menu button, kept across launches
     private val uiPrefs by lazy { getSharedPreferences("vm_ui", MODE_PRIVATE) }
@@ -566,6 +568,55 @@ class VmActivity : ComponentActivity() {
         val cmd = "content insert --uri content://sms/inbox --bind address:s:${q(from)} --bind body:s:${q(body)} " +
             "--bind read:i:0 --bind date:l:${System.currentTimeMillis()}"
         guestAsync(cmd) { out -> toast(if (out.isBlank()) getString(R.string.m_sms_sent) else out.trim().take(200)) }
+    }
+
+    /** Quick save slots of this machine: a new one (with a name), or save over one of them. */
+    @Composable
+    private fun QuickSaveDialog(onDone: () -> Unit) {
+        val ctx = this@VmActivity
+        var slots by remember { mutableStateOf<List<app.aemu.core.Backups.Slot>?>(null) }
+        var name by remember { mutableStateOf("") }
+        var overwrite by remember { mutableStateOf<app.aemu.core.Backups.Slot?>(null) }
+        LaunchedEffect(Unit) {
+            slots = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                app.aemu.core.Backups.list(applicationContext).filter { it.kind == "data" && it.machineId == vm.img.id }
+            }
+        }
+        val fmt = remember { java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT) }
+        AlertDialog(onDismissRequest = onDone,
+            title = { Text(stringResource(R.string.m_quicksave)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(name, { name = it.take(40) }, singleLine = true, label = { Text(stringResource(R.string.qs_new_name)) })
+                    Button(onClick = { onDone(); quickSave(name.trim()) }) { Text(stringResource(R.string.qs_new)) }
+                    Text(stringResource(R.string.qs_slots), style = MaterialTheme.typography.labelLarge)
+                    val list = slots
+                    when {
+                        list == null -> Text("…")
+                        list.isEmpty() -> Text(stringResource(R.string.backup_none), style = MaterialTheme.typography.bodySmall)
+                        else -> LazyColumn(Modifier.heightIn(max = 280.dp)) {
+                            items(list, key = { it.file.path }) { slot ->
+                                androidx.compose.material3.ListItem(
+                                    headlineContent = { Text(slot.label, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+                                    supportingContent = { Text(fmt.format(java.util.Date(slot.createdAt)) + " · " +
+                                        android.text.format.Formatter.formatShortFileSize(ctx, slot.size)) },
+                                    trailingContent = { androidx.compose.material3.TextButton(onClick = { overwrite = slot }) { Text(stringResource(R.string.qs_save_here)) } },
+                                )
+                            }
+                        }
+                    }
+                    Text(stringResource(R.string.qs_where), style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {},
+            dismissButton = { OutlinedButton(onClick = onDone) { Text(stringResource(R.string.close)) } })
+        overwrite?.let { slot ->
+            AlertDialog(onDismissRequest = { overwrite = null },
+                title = { Text(stringResource(R.string.qs_overwrite_title, slot.label)) },
+                text = { Text(stringResource(R.string.qs_overwrite_text)) },
+                confirmButton = { Button(onClick = { overwrite = null; onDone(); quickSave(slot.label, slot.file) }) { Text(stringResource(R.string.qs_save_here)) } },
+                dismissButton = { OutlinedButton(onClick = { overwrite = null }) { Text(stringResource(R.string.cancel)) } })
+        }
     }
 
     @Composable
@@ -787,7 +838,7 @@ class VmActivity : ComponentActivity() {
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_quicksave)) }, leadingIcon = { Icon(Icons.Rounded.Backup, null) },
                         enabled = !vm.recoveryMode && state == GuestVm.State.RUNNING,
-                        onClick = { menu = false; quickSave() })
+                        onClick = { menu = false; dialog = Dlg.QUICKSAVE })
                     DropdownMenuItem(text = { Text(stringResource(R.string.log)) }, leadingIcon = { Icon(Icons.Rounded.Terminal, null) },
                         onClick = { menu = false; showLog = true })
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_terminal)) }, leadingIcon = { Icon(Icons.Rounded.Code, null) },
@@ -859,6 +910,7 @@ class VmActivity : ComponentActivity() {
                 Dlg.BATTERY -> BatteryDialog { dialog = Dlg.NONE }
                 Dlg.ADB -> AdbDialog { dialog = Dlg.NONE }
                 Dlg.DEVICE -> DeviceDialog { dialog = Dlg.NONE }
+                Dlg.QUICKSAVE -> QuickSaveDialog { dialog = Dlg.NONE }
                 Dlg.NONE -> {}
             }
 

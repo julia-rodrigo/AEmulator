@@ -213,6 +213,13 @@
     <string name="as_led_sub">Show the guest phone’s LED above its screen</string>
     <string name="backups">Backups</string>
     <string name="m_quicksave">Quick save</string>
+    <string name="qs_new_name">Name of the new save (optional)</string>
+    <string name="qs_new">Save as new</string>
+    <string name="qs_slots">Your saves of this phone</string>
+    <string name="qs_save_here">Save here</string>
+    <string name="qs_overwrite_title">Save over \"%1$s\"?</string>
+    <string name="qs_overwrite_text">This save gets the game as it is now; what it held before is replaced.</string>
+    <string name="qs_where">Saves are files in Internal storage/AEmulator/Backups. To load one, stop the phone, then ⋮ on it → Backups → Restore.</string>
     <string name="vs_pause">Pause when you leave</string>
     <string name="vs_pause_sub">Switching to another app or locking the phone turns the system\'s screen off, so games and music pause; coming back turns it on. The swipe lock screen is switched off for this.</string>
     <string name="m_paste_title">Type the clipboard into the phone?</string>
