@@ -1770,7 +1770,27 @@ class TreeFixer(
     }
 
     /** Экран не гаснет, данные «включены»: прямо в базе настроек (есть после первой загрузки). */
+    /**
+     * "Pause when you leave" turns the guest's screen off and on: without this, every return would stop at the swipe
+     * lock screen. Like Security → Screen lock → None: lockscreen.disabled, which Android 4.2+ honours as long as no
+     * PIN, pattern or password is set (those stay).
+     */
+    private fun disableSwipeLock() {
+        if (!img.settings.pauseInBackground || img.api !in 17..22) return
+        val db = File(root, "data/system/locksettings.db")
+        if (!db.isFile) return
+        runCatching {
+            SQLiteDatabase.openDatabase(db.absolutePath, null, SQLiteDatabase.OPEN_READWRITE).use { d ->
+                val has = d.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='locksettings'", null).use { it.count > 0 }
+                if (!has) return@use
+                val cv = android.content.ContentValues().apply { put("name", "lockscreen.disabled"); put("user", 0); put("value", "1") }
+                if (d.update("locksettings", cv, "name=? AND user=0", arrayOf("lockscreen.disabled")) == 0) d.insert("locksettings", null, cv)
+            }
+        }.onFailure { log("lock screen: ${it.message}") }
+    }
+
     fun noScreenSleep() {
+        disableSwipeLock()
         val db = File(root, "data/data/com.android.providers.settings/databases/settings.db")
         if (!db.isFile && img.api >= 23 && kernel.xmlSettings) { xmlSettings(); disableSetupWizards(); return }
         if (!db.isFile) return

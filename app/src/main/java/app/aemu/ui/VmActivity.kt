@@ -328,6 +328,28 @@ class VmActivity : ComponentActivity() {
         else -> null
     }
 
+    /** the guest's screen was turned off by us when the window went away: turn it on when it comes back */
+    private var sleptByUs = false
+
+    override fun onStart() {
+        super.onStart()
+        if (sleptByUs && ::vm.isInitialized) {
+            sleptByUs = false
+            if (vm.state == GuestVm.State.RUNNING) { vm.input.press(InputService.KEY_POWER); vm.log("back: system screen on") }
+        }
+    }
+
+    override fun onStop() {
+        // like a phone in a pocket: the guest's screen goes off, and its apps pause themselves (a game stops playing)
+        if (::vm.isInitialized && vm.settings.pauseInBackground && !vm.recoveryMode && !isChangingConfigurations
+            && !isFinishing && vm.state == GuestVm.State.RUNNING && !sleptByUs) {
+            sleptByUs = true
+            vm.input.press(InputService.KEY_POWER)
+            vm.log("left: system screen off")
+        }
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         if (::vm.isInitialized) vm.sensors.resume(true)

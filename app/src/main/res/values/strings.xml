@@ -213,6 +213,8 @@
     <string name="as_led_sub">Show the guest phone’s LED above its screen</string>
     <string name="backups">Backups</string>
     <string name="m_quicksave">Quick save</string>
+    <string name="vs_pause">Pause when you leave</string>
+    <string name="vs_pause_sub">Switching to another app or locking the phone turns the system\'s screen off, so games and music pause; coming back turns it on. The swipe lock screen is switched off for this.</string>
     <string name="m_paste_title">Type the clipboard into the phone?</string>
     <string name="m_paste_text">It is typed key by key into whatever is open (a game takes the keys too):\n\n%1$s</string>
     <string name="m_paste_go">Type it</string>
