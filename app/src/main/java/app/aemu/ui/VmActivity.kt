@@ -101,7 +101,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
@@ -346,15 +345,10 @@ class VmActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /** [openBackups]: once the system is down, the main screen opens this machine's Backups (a backup needs it stopped) */
-    private fun stopVm(openBackups: Boolean = false) {
+    private fun stopVm() {
         thread {
             vm.stop()
             VmHost.vm = null
-            if (openBackups) runCatching {
-                startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_BACKUPS, vm.img.id)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
-            }
             runOnUiThread { finishAndRemoveTask() }
             Thread.sleep(300)
             // GL-мост нельзя поднять повторно в том же процессе — процесс :vm уходит вместе с машиной
@@ -792,9 +786,6 @@ class VmActivity : ComponentActivity() {
                         leadingIcon = { Icon(Icons.Rounded.RestartAlt, null) },
                         enabled = vm.recoveryMode || app.aemu.core.RecoveryImage.installed(vm.paths),
                         onClick = { menu = false; rebootVm(!vm.recoveryMode) })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_backup)) }, leadingIcon = { Icon(Icons.Rounded.Backup, null) },
-                        enabled = !vm.recoveryMode,
-                        onClick = { menu = false; stopVm(openBackups = true) })
                     DropdownMenuItem(text = { Text(stringResource(R.string.shutdown)) }, leadingIcon = { Icon(Icons.Rounded.Close, null) },
                         onClick = { menu = false; stopVm() })
                 }

@@ -212,7 +212,6 @@
     <string name="as_led">Notification light</string>
     <string name="as_led_sub">Show the guest phone’s LED above its screen</string>
     <string name="backups">Backups</string>
-    <string name="m_backup">Back up (shuts down)</string>
     <string name="backups_sub">Saves of the whole phone: firmware, apps, game progress, settings and memory card.</string>
     <string name="backup_now">Back up now</string>
     <string name="backup_label">Name of this save (optional)</string>
