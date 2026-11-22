@@ -100,6 +100,11 @@ class LibraryModel(app: Application) : AndroidViewModel(app) {
     private val _backups = MutableStateFlow<List<app.aemu.core.Backups.Slot>>(emptyList())
     val backups: StateFlow<List<app.aemu.core.Backups.Slot>> = _backups
 
+    private val _openBackupsId = MutableStateFlow<String?>(null)
+    /** a machine whose Backups sheet should open (set when its running window asked for a backup) */
+    val openBackupsId: StateFlow<String?> = _openBackupsId
+    fun openBackups(id: String?) { _openBackupsId.value = id }
+
     fun refreshBackups() {
         viewModelScope.launch { _backups.value = withContext(Dispatchers.IO) { app.aemu.core.Backups.list(getApplication()) } }
     }

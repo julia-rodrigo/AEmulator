@@ -99,6 +99,11 @@ const val ACTION_BOOT = "app.aemu.BOOT"
 class MainActivity : ComponentActivity() {
     private val model: LibraryModel by viewModels()
 
+    companion object {
+        /** id of a machine whose Backups sheet opens (from the running machine's menu, after it has shut down) */
+        const val EXTRA_BACKUPS = "backups"
+    }
+
     /** Language this activity was created with: a change means its string resources are stale and need context recreation. */
     private var style = ""
     private fun styleOf(c: Context) = app.aemu.AppPrefs.language(c)
@@ -142,6 +147,7 @@ class MainActivity : ComponentActivity() {
         if (importPath != null) {
             model.import(android.net.Uri.fromFile(java.io.File(importPath)))
         }
+        i?.getStringExtra(EXTRA_BACKUPS)?.let { model.openBackups(it); i.removeExtra(EXTRA_BACKUPS) }
         // ярлыки и автоматизация: am start -a app.aemu.BOOT --es id <образ>
         if (i?.action == ACTION_BOOT) i.getStringExtra("id")?.let { VmActivity.start(this, it, i.getBooleanExtra("recovery", false)) }
     }
@@ -170,6 +176,11 @@ fun Library(model: LibraryModel) {
     var library by remember { mutableStateOf(false) }
     var containerFrom by remember { mutableStateOf<GuestImage?>(null) }
     var backupsFor by remember { mutableStateOf<GuestImage?>(null) }
+    val openBackupsId by model.openBackupsId.collectAsState()
+    LaunchedEffect(openBackupsId, images) {
+        val id = openBackupsId ?: return@LaunchedEffect
+        images.firstOrNull { it.id == id }?.let { backupsFor = it; model.refreshBackups(); model.openBackups(null) }
+    }
     val pickBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { backupsFor = null; model.import(it) } }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
