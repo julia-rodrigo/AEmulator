@@ -24,7 +24,7 @@ AEmulator sets up a Nexus 4 the way Elphis was tested, so nothing needs changing
 | App hardware acceleration (hwui) | on |
 | Dalvik JIT | on |
 | Hardware 32-bit execution | off |
-| Guest RAM | 512 MB |
+| Guest RAM | 2048 MB (what the Nexus 4 had; less makes the game freeze and lose its place) |
 | Modern TLS proxy, radio module | on |
 | Button bar | Back, Home, Recents, Menu; compact |
 | Keep screen on, notification light | on; single touch off |

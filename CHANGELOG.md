@@ -8,7 +8,7 @@
 - Clearer sound under load: the phone-side audio thread runs at audio priority with steady writes and stays frame-aligned; the guest audio driver waits for room instead of dropping pieces of sound, and keeps the guest's mixer on real time.
 - Rapid tapping no longer stalls the app: touch events go to the guest from their own thread, and stale finger moves are merged.
 - When the guest still runs out of sound tracks, its track list is written to the host log (and again 15 s later).
-- A Nexus 4 firmware gets the settings Elphis was tested with at import (software rendering, 512 MB RAM); guide in `docs/play-elphis.md`.
+- A Nexus 4 firmware gets the settings Elphis was tested with at import (software rendering, 2048 MB RAM); guide in `docs/play-elphis.md`.
 - Uninstalling asks whether to keep the app's data (imported firmware, everything inside the virtual phone); reinstalling a build signed with the same key brings it back.
 - Backups: ⋮ → Backups on a machine saves the whole phone (firmware, apps, game saves, settings, memory card) as a `.aemu` file in Internal storage/AEmulator/Backups, any number of them; Restore brings one back as a new machine; Import backup file (or the + import) restores one copied from a computer.
 - Debug builds are signed with a shared test key from `app/test-signing` when the file is there, so test builds install over each other as updates.
